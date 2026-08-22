@@ -2,6 +2,7 @@
 #import "Headers/YTPivotBarView.h"
 #import "Headers/YTIPivotBarSupportedRenderers.h"
 #import "Headers/YTAssetLoader.h"
+#import "Headers/Localization.h"
 #import "Prefs/YTMDownloads.h"
 
 static BOOL YTMU(NSString *key) {
