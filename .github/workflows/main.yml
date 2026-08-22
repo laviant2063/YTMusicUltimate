@@ -38,6 +38,9 @@ jobs:
           path: main
           submodules: recursive
 
+      - name: Run offline regression tests
+        run: bash main/Tests/run_offline_tests.sh
+
       - name: Hide sensitive inputs
         uses: levibostian/action-hide-sensitive-inputs@v1
         with:
