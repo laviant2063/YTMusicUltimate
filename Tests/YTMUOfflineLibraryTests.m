@@ -85,11 +85,11 @@ static void testPlaylistPersistenceRenameAndDeletion(void) {
     NSString *secondID = TrackIDsByFileName(library)[@"Artist - Second.m4a"];
     YTMUOfflinePlaylist *playlist = [library createPlaylistWithName:@"Road Trip" error:&error];
     ASSERT_TRUE(playlist != nil);
-    ASSERT_TRUE([library setTrackIDs:@[secondID, firstID] forPlaylistID:playlist.playlistID error:&error]);
+    ASSERT_TRUE(([library setTrackIDs:@[secondID, firstID] forPlaylistID:playlist.playlistID error:&error]));
 
     YTMUOfflineLibrary *reloaded = [[YTMUOfflineLibrary alloc] initWithDocumentsURL:documentsURL];
     ASSERT_TRUE([reloaded reload:&error]);
-    ASSERT_EQUAL(@[secondID, firstID], [reloaded playlistForID:playlist.playlistID].trackIDs);
+    ASSERT_EQUAL((@[secondID, firstID]), [reloaded playlistForID:playlist.playlistID].trackIDs);
 
     ASSERT_TRUE([reloaded renameTrackID:firstID toBaseName:@"Renamed Artist - Renamed Song" error:&error]);
     YTMUOfflineTrack *renamed = [reloaded trackForID:firstID];
