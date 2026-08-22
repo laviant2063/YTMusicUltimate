@@ -11,6 +11,10 @@
 @property (nonatomic, strong) MBProgressHUD *hud;
 @property (nonatomic, strong) NSString *tempName;
 @property (nonatomic, strong) NSString *mediaName;
+@property (nonatomic, strong) NSString *trackID;
+@property (nonatomic, strong) NSString *trackTitle;
+@property (nonatomic, strong) NSString *trackArtist;
+@property (nonatomic, strong) NSString *artworkFileName;
 @property (nonatomic) NSInteger duration;
 - (void)downloadAudio:(NSString *)audioURL;
 - (void)downloadImage:(NSURL *)link;

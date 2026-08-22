@@ -119,3 +119,26 @@
 "ALL_DOWNLOADS" = "all download audios"; //keep it lowercase
 "DELETE" = "Delete";
 "RENAME" = "Rename";
+
+"OFFLINE_PLAYER" = "Offline Player";
+"OFFLINE_PLAYLISTS" = "Offline Playlists";
+"OFFLINE_ALL_DOWNLOADS" = "All Downloads";
+"DOWNLOADED_SONGS" = "Downloaded Songs";
+"CURRENT_QUEUE" = "Current Queue";
+"NOTHING_PLAYING" = "Nothing Playing";
+"PLAY_ALL" = "Play All";
+"SHUFFLE_PLAY" = "Shuffle";
+"NEW_PLAYLIST" = "New Playlist";
+"RENAME_PLAYLIST" = "Rename Playlist";
+"PLAYLIST_NAME" = "Playlist name";
+"CREATE" = "Create";
+"SONG_COUNT" = "%ld songs";
+"EMPTY_PLAYLIST" = "This playlist has no downloaded songs.";
+"PLAY_THIS_SONG_ONLY" = "Play This Song Only";
+"ADD_TO_PLAYLIST" = "Add to Playlist";
+"ADDED_TO_PLAYLIST" = "Added to playlist";
+"REMOVE_FROM_PLAYLIST" = "Remove from Playlist";
+"REMOVE" = "Remove";
+"ADD_SONGS" = "Add Songs";
+"DELETE_PLAYLIST_MESSAGE" = "The downloaded audio files will not be deleted.";
+"REMOVE_ALL_MESSAGE" = "Offline playlists will remain, but all downloaded audio files will be removed.";

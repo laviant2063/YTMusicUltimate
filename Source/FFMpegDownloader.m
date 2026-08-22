@@ -1,4 +1,5 @@
 #import "FFMpegDownloader.h"
+#import "Offline/YTMUOfflineLibrary.h"
 
 @implementation FFMpegDownloader {
 
@@ -40,6 +41,14 @@
                 BOOL isMoved = [[NSFileManager defaultManager] moveItemAtURL:destinationURL toURL:outputURL error:nil];
 
                 if (isMoved) {
+                    NSError *registrationError = nil;
+                    [[YTMUOfflineLibrary sharedLibrary]
+                        registerDownloadedFileName:outputURL.lastPathComponent
+                        preferredTrackID:self.trackID
+                        title:self.trackTitle
+                        artist:self.trackArtist
+                        artworkFileName:self.artworkFileName
+                        error:&registrationError];
                     [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadDataNotification" object:nil];
                     self.hud = [MBProgressHUD showHUDAddedTo:[UIApplication sharedApplication].keyWindow animated:YES];
                     self.hud.mode = MBProgressHUDModeCustomView;
