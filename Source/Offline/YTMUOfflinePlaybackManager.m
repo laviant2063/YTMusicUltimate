@@ -1,5 +1,6 @@
 #import "YTMUOfflinePlaybackManager.h"
 
+#import <AVKit/AVKit.h>
 #import <MediaPlayer/MediaPlayer.h>
 #import <UIKit/UIKit.h>
 
