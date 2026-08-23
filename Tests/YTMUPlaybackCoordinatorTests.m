@@ -44,7 +44,7 @@ static NSUInteger failures = 0;
     return YES;
 }
 - (void)setNativeMiniPlayerSuppressed:(BOOL)suppressed {
-    self.nativeMiniPlayerSuppressed = suppressed;
+    _nativeMiniPlayerSuppressed = suppressed;
 }
 - (void)showOfflineEndedForNativeToast {
     self.toastCount++;
@@ -147,7 +147,7 @@ static void testOfflineToNativeEndsOfflineBeforeNativeStarts(void) {
     YTMUTestOfflineController *offline = nil;
     YTMUPlaybackCoordinator *coordinator = MakeCoordinator(&native, &offline);
     __block BOOL granted = NO;
-    [coordinator requestOfflinePlaybackWithCompletion:^(BOOL value, NSError *error) {
+    [coordinator requestOfflinePlaybackWithCompletion:^(BOOL value, __unused NSError *error) {
         granted = value;
     }];
     ASSERT_TRUE(granted);
@@ -224,4 +224,3 @@ int main(void) {
     }
     return EXIT_SUCCESS;
 }
-
