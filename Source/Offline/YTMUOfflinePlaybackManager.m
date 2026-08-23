@@ -27,7 +27,7 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
 @property (nonatomic, strong, nullable) NSURL *loadedAudioURL;
 @property (nonatomic, strong, nullable) NSTimer *sleepTimer;
 @property (nonatomic, assign) NSUInteger playbackRequestGeneration;
-@property (nonatomic, strong, nullable) MPNowPlayingSession *nowPlayingSession;
+@property (nonatomic, strong, nullable) MPNowPlayingSession *nowPlayingSession API_AVAILABLE(ios(16.0));
 @property (nonatomic, strong, nullable) MPNowPlayingInfoCenter *offlineNowPlayingInfoCenter;
 @property (nonatomic, strong, nullable) MPRemoteCommandCenter *offlineRemoteCommandCenter;
 @property (nonatomic, strong) NSMutableArray<NSDictionary<NSString *, id> *> *remoteCommandRegistrations;
