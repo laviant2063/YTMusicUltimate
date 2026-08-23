@@ -96,7 +96,7 @@ static UIColor *YTMUOfflineArtworkColor(UIImage *image) {
     [minimizeButton addTarget:self action:@selector(minimizePlayer:) forControlEvents:UIControlEventTouchUpInside];
     minimizeButton.accessibilityLabel = @"플레이어 축소";
 
-    UIImageView *badgeIcon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"arrow.down.to.line"];
+    UIImageView *badgeIcon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"arrow.down.to.line"]];
     badgeIcon.translatesAutoresizingMaskIntoConstraints = NO;
     badgeIcon.tintColor = UIColor.whiteColor;
     [badgeIcon.widthAnchor constraintEqualToConstant:15].active = YES;
