@@ -243,10 +243,23 @@ typedef NS_ENUM(NSInteger, YTMUPlaybackCoordinatorErrorCode) {
 
 - (void)nativePlaybackWillStart {
     [self performOnMainSynchronously:^{
+        if (self.owner == YTMUPlaybackOwnerTransitioning
+            && self.targetOwner == YTMUPlaybackOwnerOffline) {
+            NSError *error = [self errorWithCode:YTMUPlaybackCoordinatorErrorTransitionCancelled
+                                      description:@"Offline playback was cancelled because YouTube Music started."];
+            [self finishPendingOfflineTransitionGranted:NO error:error];
+        }
         id<YTMUOfflineSessionControlling> offlineController = self.offlineController;
         BOOL hadOfflineSession = self.owner == YTMUPlaybackOwnerOffline
             || offlineController.offlineSessionActive;
         self.shouldShowNativeTransitionToast = self.shouldShowNativeTransitionToast || hadOfflineSession;
+        if (self.owner == YTMUPlaybackOwnerTransitioning
+            && self.targetOwner == YTMUPlaybackOwnerNative) {
+            if (hadOfflineSession) {
+                [offlineController endOfflineSessionWithReason:YTMUOfflineSessionEndReasonNativePlaybackStarted];
+            }
+            return;
+        }
         self.transitionGeneration++;
         self.ownershipState = YTMUPlaybackBeginTransition(self.ownershipState,
                                                           YTMUPlaybackOwnerNative);

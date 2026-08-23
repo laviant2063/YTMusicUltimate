@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import "YTMUOfflineLibrary.h"
 #import "YTMUOfflinePlaybackPolicy.h"
+#import "YTMUPlaybackCoordinator.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -9,7 +10,7 @@ FOUNDATION_EXPORT NSNotificationName const YTMUOfflinePlaybackDidChangeNotificat
 FOUNDATION_EXPORT NSNotificationName const YTMUOfflinePlaybackProgressNotification;
 FOUNDATION_EXPORT NSNotificationName const YTMUOfflinePlaybackErrorNotification;
 
-@interface YTMUOfflinePlaybackManager : NSObject
+@interface YTMUOfflinePlaybackManager : NSObject <YTMUOfflineSessionControlling>
 
 @property (class, nonatomic, readonly) YTMUOfflinePlaybackManager *sharedManager;
 @property (nonatomic, strong, readonly) AVPlayer *player;
@@ -23,6 +24,8 @@ FOUNDATION_EXPORT NSNotificationName const YTMUOfflinePlaybackErrorNotification;
 @property (nonatomic, assign, readonly) YTMUOfflineRepeatMode repeatMode;
 @property (nonatomic, assign, readonly) NSTimeInterval currentTime;
 @property (nonatomic, assign, readonly) NSTimeInterval duration;
+@property (nonatomic, assign, readonly) float playbackRate;
+@property (nonatomic, strong, readonly, nullable) NSDate *sleepTimerEndDate;
 
 - (void)playTracks:(NSArray<YTMUOfflineTrack *> *)tracks
     startingAtIndex:(NSInteger)index
@@ -38,9 +41,10 @@ FOUNDATION_EXPORT NSNotificationName const YTMUOfflinePlaybackErrorNotification;
 - (void)cycleRepeatMode;
 - (void)playQueueIndex:(NSInteger)index;
 - (void)moveQueueItemFromIndex:(NSInteger)sourceIndex toIndex:(NSInteger)destinationIndex;
-
-- (BOOL)isOfflinePlayer:(AVPlayer *)player;
-- (void)onlinePlayerWillStart:(AVPlayer *)player;
+- (void)setPlaybackRate:(float)playbackRate;
+- (void)setSleepTimerInterval:(NSTimeInterval)interval;
+- (void)cancelSleepTimer;
+- (void)endOfflineSessionWithReason:(YTMUOfflineSessionEndReason)reason;
 
 @end
 

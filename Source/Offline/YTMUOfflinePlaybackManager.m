@@ -20,10 +20,17 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
 @property (nonatomic, assign, readwrite, getter=isPlaying) BOOL playing;
 @property (nonatomic, assign, readwrite, getter=isOfflineSessionActive) BOOL offlineSessionActive;
 @property (nonatomic, assign, readwrite) YTMUOfflineRepeatMode repeatMode;
+@property (nonatomic, assign, readwrite) float playbackRate;
+@property (nonatomic, strong, readwrite, nullable) NSDate *sleepTimerEndDate;
 @property (nonatomic, strong) id timeObserver;
-@property (nonatomic, strong) NSHashTable<AVPlayer *> *onlinePlayers;
 @property (nonatomic, assign) BOOL resumeAfterInterruption;
 @property (nonatomic, strong, nullable) NSURL *loadedAudioURL;
+@property (nonatomic, strong, nullable) NSTimer *sleepTimer;
+@property (nonatomic, assign) NSUInteger playbackRequestGeneration;
+@property (nonatomic, strong, nullable) MPNowPlayingSession *nowPlayingSession;
+@property (nonatomic, strong, nullable) MPNowPlayingInfoCenter *offlineNowPlayingInfoCenter;
+@property (nonatomic, strong, nullable) MPRemoteCommandCenter *offlineRemoteCommandCenter;
+@property (nonatomic, strong) NSMutableArray<NSDictionary<NSString *, id> *> *remoteCommandRegistrations;
 @end
 
 @implementation YTMUOfflinePlaybackManager
@@ -45,7 +52,8 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
         _queue = @[];
         _currentIndex = NSNotFound;
         _repeatMode = YTMUOfflineRepeatModeOff;
-        _onlinePlayers = [NSHashTable weakObjectsHashTable];
+        _playbackRate = 1.0;
+        _remoteCommandRegistrations = [NSMutableArray array];
 
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(playerItemDidFinish:)
@@ -76,7 +84,6 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
             [[NSNotificationCenter defaultCenter] postNotificationName:YTMUOfflinePlaybackProgressNotification
                                                                 object:weakSelf];
         }];
-        [self configureRemoteCommands];
     }
     return self;
 }
@@ -171,14 +178,33 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
                                        error:nil];
 }
 
-- (void)pauseKnownOnlinePlayers {
-    @synchronized (self.onlinePlayers) {
-        for (AVPlayer *onlinePlayer in self.onlinePlayers) {
-            if (onlinePlayer != nil && onlinePlayer != self.player && onlinePlayer.rate > 0) {
-                [onlinePlayer pause];
-            }
-        }
+- (void)performOnMainSynchronously:(dispatch_block_t)block {
+    if (NSThread.isMainThread) {
+        block();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), block);
     }
+}
+
+- (void)beginPlayingAfterOwnershipGranted {
+    if (self.currentTrack == nil || self.player.currentItem == nil) {
+        [self endOfflineSessionWithReason:YTMUOfflineSessionEndReasonFatalError];
+        [self postErrorMessage:@"Choose a downloaded song first." error:nil];
+        return;
+    }
+    self.offlineSessionActive = YES;
+    [self activateOfflineMediaControls];
+    if (![self activateAudioSession]) {
+        [self endOfflineSessionWithReason:YTMUOfflineSessionEndReasonFatalError];
+        return;
+    }
+    if (self.duration > 0 && self.currentTime >= self.duration - 0.25) {
+        [self.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+    }
+    [self.player playImmediatelyAtRate:self.playbackRate];
+    self.playing = YES;
+    [YTMUPlaybackCoordinator.sharedCoordinator offlinePlaybackDidStart];
+    [self postChange];
 }
 
 - (void)playTracks:(NSArray<YTMUOfflineTrack *> *)tracks
@@ -207,16 +233,25 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
     if (index < 0 || index >= (NSInteger)availableTracks.count) {
         index = 0;
     }
-    self.originalQueue = availableTracks;
-    self.queue = availableTracks;
-    self.currentIndex = index;
-    self.shuffled = NO;
-    self.offlineSessionActive = YES;
-
-    if (shuffle) {
-        [self enableShufflePreservingCurrentTrack];
-    }
-    [self loadCurrentTrackAndPlay:YES preservingTime:0];
+    NSUInteger generation = ++self.playbackRequestGeneration;
+    NSArray<YTMUOfflineTrack *> *requestedTracks = availableTracks.copy;
+    NSInteger requestedIndex = index;
+    [YTMUPlaybackCoordinator.sharedCoordinator requestOfflinePlaybackWithCompletion:^(BOOL granted, NSError *error) {
+        if (generation != self.playbackRequestGeneration) return;
+        if (!granted) {
+            [self postErrorMessage:@"Offline playback could not start." error:error];
+            return;
+        }
+        self.originalQueue = requestedTracks;
+        self.queue = requestedTracks;
+        self.currentIndex = requestedIndex;
+        self.shuffled = NO;
+        self.offlineSessionActive = YES;
+        if (shuffle) {
+            [self enableShufflePreservingCurrentTrack];
+        }
+        [self loadCurrentTrackAndPlay:YES preservingTime:0];
+    }];
 }
 
 - (void)playSingleTrack:(YTMUOfflineTrack *)track {
@@ -232,17 +267,15 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
         [self postErrorMessage:@"Choose a downloaded song first." error:nil];
         return;
     }
-    self.offlineSessionActive = YES;
-    [self pauseKnownOnlinePlayers];
-    if (![self activateAudioSession]) {
-        return;
-    }
-    if (self.duration > 0 && self.currentTime >= self.duration - 0.25) {
-        [self.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
-    }
-    [self.player play];
-    self.playing = YES;
-    [self postChange];
+    NSUInteger generation = ++self.playbackRequestGeneration;
+    [YTMUPlaybackCoordinator.sharedCoordinator requestOfflinePlaybackWithCompletion:^(BOOL granted, NSError *error) {
+        if (generation != self.playbackRequestGeneration) return;
+        if (!granted) {
+            [self postErrorMessage:@"Offline playback could not start." error:error];
+            return;
+        }
+        [self beginPlayingAfterOwnershipGranted];
+    }];
 }
 
 - (void)pause {
@@ -451,7 +484,7 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
     self.playing = NO;
     [self postChange];
     if (autoplay) {
-        [self play];
+        [self beginPlayingAfterOwnershipGranted];
     }
 }
 
@@ -470,21 +503,35 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
 }
 
 - (void)clearQueue {
-    BOOL wasOfflineSessionActive = self.offlineSessionActive;
-    [self.player pause];
-    [self.player replaceCurrentItemWithPlayerItem:nil];
-    self.originalQueue = @[];
-    self.queue = @[];
-    self.currentIndex = NSNotFound;
-    self.playing = NO;
-    self.shuffled = NO;
-    self.offlineSessionActive = NO;
-    self.loadedAudioURL = nil;
-    if (wasOfflineSessionActive) {
-        MPNowPlayingInfoCenter.defaultCenter.nowPlayingInfo = nil;
-    }
-    [self deactivateAudioSessionIfIdle];
-    [self postChange];
+    [self endOfflineSessionWithReason:YTMUOfflineSessionEndReasonQueueRemoved];
+}
+
+- (void)endOfflineSessionWithReason:(YTMUOfflineSessionEndReason)reason {
+    [self performOnMainSynchronously:^{
+        BOOL hadRuntimeState = self.offlineSessionActive
+            || self.player.currentItem != nil
+            || self.queue.count > 0;
+        if (!hadRuntimeState) return;
+
+        self.playbackRequestGeneration++;
+        [self.player pause];
+        [self.player replaceCurrentItemWithPlayerItem:nil];
+        self.originalQueue = @[];
+        self.queue = @[];
+        self.currentIndex = NSNotFound;
+        self.playing = NO;
+        self.shuffled = NO;
+        self.repeatMode = YTMUOfflineRepeatModeOff;
+        self->_playbackRate = 1.0;
+        self.offlineSessionActive = NO;
+        self.loadedAudioURL = nil;
+        self.resumeAfterInterruption = NO;
+        [self cancelSleepTimer];
+        [self stopOfflineMediaControls];
+        [self deactivateAudioSessionIfIdle];
+        [self postChange];
+        [YTMUPlaybackCoordinator.sharedCoordinator offlineSessionDidEndWithReason:reason];
+    }];
 }
 
 - (void)playerItemDidFinish:(NSNotification *)notification {
@@ -501,7 +548,7 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
     }
     if ((NSInteger)nextIndex == self.currentIndex) {
         [self.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero completionHandler:^(__unused BOOL finished) {
-            [self play];
+            [self beginPlayingAfterOwnershipGranted];
         }];
         return;
     }
@@ -563,35 +610,6 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
     }
 }
 
-- (BOOL)isOfflinePlayer:(AVPlayer *)player {
-    return player == self.player;
-}
-
-- (void)onlinePlayerWillStart:(AVPlayer *)player {
-    if (player == nil || player == self.player) {
-        return;
-    }
-    @synchronized (self.onlinePlayers) {
-        [self.onlinePlayers addObject:player];
-    }
-    if (!self.offlineSessionActive) {
-        return;
-    }
-    void (^pauseOfflinePlayback)(void) = ^{
-        if (self.offlineSessionActive) {
-            [self.player pause];
-            self.playing = NO;
-            self.offlineSessionActive = NO;
-            [self postChange];
-        }
-    };
-    if (NSThread.isMainThread) {
-        pauseOfflinePlayback();
-    } else {
-        dispatch_async(dispatch_get_main_queue(), pauseOfflinePlayback);
-    }
-}
-
 - (void)audioSessionInterrupted:(NSNotification *)notification {
     AVAudioSessionInterruptionType type = [notification.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
     if (type == AVAudioSessionInterruptionTypeBegan) {
@@ -613,42 +631,67 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
     }
 }
 
-- (void)configureRemoteCommands {
-    MPRemoteCommandCenter *commands = MPRemoteCommandCenter.sharedCommandCenter;
+- (void)addRemoteTargetToCommand:(MPRemoteCommand *)command
+                         handler:(MPRemoteCommandHandlerStatus (^)(MPRemoteCommandEvent *event))handler {
+    if (command == nil || handler == nil) return;
+    id token = [command addTargetWithHandler:handler];
+    if (token != nil) {
+        [self.remoteCommandRegistrations addObject:@{@"command": command, @"token": token}];
+    }
+}
+
+- (void)activateOfflineMediaControls {
+    if (self.offlineRemoteCommandCenter != nil) return;
+
+    if (@available(iOS 16.0, *)) {
+        if (NSClassFromString(@"MPNowPlayingSession") != Nil) {
+            MPNowPlayingSession *session = [[MPNowPlayingSession alloc] initWithPlayers:@[self.player]];
+            self.nowPlayingSession = session;
+            self.offlineNowPlayingInfoCenter = session.nowPlayingInfoCenter;
+            self.offlineRemoteCommandCenter = session.remoteCommandCenter;
+            [session becomeActiveIfPossibleWithCompletion:^(__unused BOOL success) {}];
+        }
+    }
+    if (self.offlineRemoteCommandCenter == nil) {
+        self.offlineNowPlayingInfoCenter = MPNowPlayingInfoCenter.defaultCenter;
+        self.offlineRemoteCommandCenter = MPRemoteCommandCenter.sharedCommandCenter;
+    }
+
+    MPRemoteCommandCenter *commands = self.offlineRemoteCommandCenter;
     __weak typeof(self) weakSelf = self;
-    [commands.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
+    [self addRemoteTargetToCommand:commands.playCommand handler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
         if (!weakSelf.offlineSessionActive || weakSelf.currentTrack == nil) return MPRemoteCommandHandlerStatusCommandFailed;
         [weakSelf play];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
-    [commands.pauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
+    [self addRemoteTargetToCommand:commands.pauseCommand handler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
         if (!weakSelf.offlineSessionActive || weakSelf.currentTrack == nil) return MPRemoteCommandHandlerStatusCommandFailed;
         [weakSelf pause];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
-    [commands.togglePlayPauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
+    [self addRemoteTargetToCommand:commands.togglePlayPauseCommand handler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
         if (!weakSelf.offlineSessionActive || weakSelf.currentTrack == nil) return MPRemoteCommandHandlerStatusCommandFailed;
         [weakSelf togglePlayback];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
-    [commands.nextTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
+    [self addRemoteTargetToCommand:commands.nextTrackCommand handler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
         if (!weakSelf.offlineSessionActive || weakSelf.currentTrack == nil) return MPRemoteCommandHandlerStatusCommandFailed;
         [weakSelf next];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
-    [commands.previousTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
+    [self addRemoteTargetToCommand:commands.previousTrackCommand handler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
         if (!weakSelf.offlineSessionActive || weakSelf.currentTrack == nil) return MPRemoteCommandHandlerStatusCommandFailed;
         [weakSelf previous];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
-    [commands.changePlaybackPositionCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+    [self addRemoteTargetToCommand:commands.changePlaybackPositionCommand handler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
         if (!weakSelf.offlineSessionActive || ![event isKindOfClass:MPChangePlaybackPositionCommandEvent.class]) {
             return MPRemoteCommandHandlerStatusCommandFailed;
         }
         [weakSelf seekToTime:((MPChangePlaybackPositionCommandEvent *)event).positionTime];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
-    [commands.changeShuffleModeCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+    [self addRemoteTargetToCommand:commands.changeShuffleModeCommand handler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
         if (!weakSelf.offlineSessionActive || ![event isKindOfClass:MPChangeShuffleModeCommandEvent.class]) {
             return MPRemoteCommandHandlerStatusCommandFailed;
         }
@@ -657,7 +700,7 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
         if (weakSelf.shuffled != shouldShuffle) [weakSelf toggleShuffle];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
-    [commands.changeRepeatModeCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+    [self addRemoteTargetToCommand:commands.changeRepeatModeCommand handler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
         if (!weakSelf.offlineSessionActive || ![event isKindOfClass:MPChangeRepeatModeCommandEvent.class]) {
             return MPRemoteCommandHandlerStatusCommandFailed;
         }
@@ -668,6 +711,62 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
         [weakSelf postChange];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
+}
+
+- (void)stopOfflineMediaControls {
+    self.offlineNowPlayingInfoCenter.nowPlayingInfo = nil;
+    for (NSDictionary<NSString *, id> *registration in self.remoteCommandRegistrations.copy) {
+        MPRemoteCommand *command = registration[@"command"];
+        id token = registration[@"token"];
+        if (command != nil && token != nil) {
+            [command removeTarget:token];
+        }
+    }
+    [self.remoteCommandRegistrations removeAllObjects];
+    self.offlineRemoteCommandCenter = nil;
+    self.offlineNowPlayingInfoCenter = nil;
+    if (@available(iOS 16.0, *)) {
+        [self.nowPlayingSession removePlayer:self.player];
+        self.nowPlayingSession = nil;
+    }
+}
+
+- (void)setPlaybackRate:(float)playbackRate {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self setPlaybackRate:playbackRate]; });
+        return;
+    }
+    _playbackRate = MIN(2.0f, MAX(0.5f, playbackRate));
+    if (self.playing) {
+        [self.player playImmediatelyAtRate:self.playbackRate];
+    }
+    [self postChange];
+}
+
+- (void)setSleepTimerInterval:(NSTimeInterval)interval {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self setSleepTimerInterval:interval]; });
+        return;
+    }
+    [self cancelSleepTimer];
+    if (interval <= 0 || !self.offlineSessionActive) {
+        [self postChange];
+        return;
+    }
+    self.sleepTimerEndDate = [NSDate dateWithTimeIntervalSinceNow:interval];
+    __weak typeof(self) weakSelf = self;
+    self.sleepTimer = [NSTimer scheduledTimerWithTimeInterval:interval repeats:NO block:^(__unused NSTimer *timer) {
+        [YTMUPlaybackCoordinator.sharedCoordinator endOfflineSessionWithReason:YTMUOfflineSessionEndReasonSleepTimer];
+        weakSelf.sleepTimer = nil;
+        weakSelf.sleepTimerEndDate = nil;
+    }];
+    [self postChange];
+}
+
+- (void)cancelSleepTimer {
+    [self.sleepTimer invalidate];
+    self.sleepTimer = nil;
+    self.sleepTimerEndDate = nil;
 }
 
 - (void)updateNowPlayingInfo {
@@ -684,8 +783,10 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
         info[MPMediaItemPropertyPlaybackDuration] = @(self.duration);
     }
     info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(self.currentTime);
-    info[MPNowPlayingInfoPropertyPlaybackRate] = @(self.playing ? 1.0 : 0.0);
+    info[MPNowPlayingInfoPropertyPlaybackRate] = @(self.playing ? self.playbackRate : 0.0);
+    info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = @(self.playbackRate);
     info[MPNowPlayingInfoPropertyMediaType] = @(MPNowPlayingInfoMediaTypeAudio);
+    info[MPNowPlayingInfoPropertyExternalContentIdentifier] = track.trackID;
 
     UIImage *artwork = [self artworkForTrack:track];
     if (artwork != nil) {
@@ -694,7 +795,7 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
             return artwork;
         }];
     }
-    MPNowPlayingInfoCenter.defaultCenter.nowPlayingInfo = info;
+    self.offlineNowPlayingInfoCenter.nowPlayingInfo = info;
 }
 
 @end

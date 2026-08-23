@@ -39,3 +39,5 @@ xcrun clang \
   -o "$build_root/playback-coordinator-tests"
 
 "$build_root/playback-coordinator-tests"
+
+bash "$repo_root/Tests/YTMUPlaybackIntegrationStaticTests.sh"

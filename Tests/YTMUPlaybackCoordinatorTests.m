@@ -142,6 +142,28 @@ static void testNativePauseFailureCancelsOfflineStart(void) {
     ASSERT_TRUE(!native.nativeMiniPlayerSuppressed);
 }
 
+static void testNativeStartCancelsPendingOfflineGrant(void) {
+    YTMUTestNativeAdapter *native = nil;
+    YTMUPlaybackCoordinator *coordinator = MakeCoordinator(&native, NULL);
+    [coordinator nativePlaybackDidStart];
+    native.nativePlaybackAudible = YES;
+
+    __block BOOL completionCalled = NO;
+    __block BOOL granted = YES;
+    [coordinator requestOfflinePlaybackWithCompletion:^(BOOL value, NSError *error) {
+        completionCalled = YES;
+        granted = value;
+        ASSERT_TRUE(error != nil);
+    }];
+    ASSERT_EQUAL_INTEGER(YTMUPlaybackOwnerTransitioning, coordinator.owner);
+
+    [coordinator nativePlaybackWillStart];
+    [coordinator nativePlaybackDidStart];
+    ASSERT_TRUE(completionCalled);
+    ASSERT_TRUE(!granted);
+    ASSERT_EQUAL_INTEGER(YTMUPlaybackOwnerNative, coordinator.owner);
+}
+
 static void testOfflineToNativeEndsOfflineBeforeNativeStarts(void) {
     YTMUTestNativeAdapter *native = nil;
     YTMUTestOfflineController *offline = nil;
@@ -211,6 +233,7 @@ int main(void) {
         testPureOwnershipTransitions();
         testNativeToOfflineWaitsForConfirmedPause();
         testNativePauseFailureCancelsOfflineStart();
+        testNativeStartCancelsPendingOfflineGrant();
         testOfflineToNativeEndsOfflineBeforeNativeStarts();
         testOfflineEndIsIdempotent();
         testNativePauseRetainsNativeOwnership();
