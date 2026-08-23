@@ -27,3 +27,15 @@ xcrun clang \
   -o "$build_root/offline-library-tests"
 
 "$build_root/offline-library-tests"
+
+xcrun clang \
+  -fobjc-arc \
+  -Wall -Wextra -Werror \
+  -framework Foundation \
+  "$repo_root/Source/Offline/YTMUPlaybackCoordinatorPolicy.m" \
+  "$repo_root/Source/Offline/YTMUPlaybackCoordinator.m" \
+  "$repo_root/Tests/YTMUPlaybackCoordinatorTests.m" \
+  -I"$repo_root/Source/Offline" \
+  -o "$build_root/playback-coordinator-tests"
+
+"$build_root/playback-coordinator-tests"
