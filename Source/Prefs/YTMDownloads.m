@@ -89,10 +89,9 @@ static UIButton *YTMUDownloadsHeaderButton(NSString *title, NSString *symbol) {
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.tableView.bottomAnchor constraintEqualToAnchor:self.miniPlayer.topAnchor],
-        [self.miniPlayer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.miniPlayer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.miniPlayer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:10],
+        [self.miniPlayer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-10],
         [self.miniPlayer.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
-        [self.miniPlayer.heightAnchor constraintEqualToConstant:68],
     ]];
 
     NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;

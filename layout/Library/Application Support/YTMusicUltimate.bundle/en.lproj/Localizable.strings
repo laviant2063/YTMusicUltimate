@@ -142,3 +142,14 @@
 "ADD_SONGS" = "Add Songs";
 "DELETE_PLAYLIST_MESSAGE" = "The downloaded audio files will not be deleted.";
 "REMOVE_ALL_MESSAGE" = "Offline playlists will remain, but all downloaded audio files will be removed.";
+"OFFLINE_PLAYBACK_BADGE" = "Offline Playback";
+"OFFLINE_BADGE" = "Offline";
+"UP_NEXT" = "Up Next";
+"OFFLINE_PLAYBACK_SPEED" = "Playback Speed";
+"OFFLINE_SLEEP_TIMER" = "Sleep Timer";
+"OFFLINE_TIMER_OFF" = "Off";
+"OFFLINE_TIMER_15" = "15 minutes";
+"OFFLINE_TIMER_30" = "30 minutes";
+"OFFLINE_TIMER_60" = "60 minutes";
+"OFFLINE_END_PLAYBACK" = "End Offline Playback";
+"OFFLINE_END_PRESERVES_DATA" = "Downloads and playlists will not be deleted.";
