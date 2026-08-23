@@ -6,6 +6,6 @@ typedef void (^YTMUOfflineShowQueueHandler)(void);
 
 FOUNDATION_EXPORT void YTMUPresentOfflinePlayerMenu(UIViewController *presenter,
                                                     UIView *sourceView,
-                                                    nullable YTMUOfflineShowQueueHandler showQueueHandler);
+                                                    YTMUOfflineShowQueueHandler _Nullable showQueueHandler);
 
 NS_ASSUME_NONNULL_END
