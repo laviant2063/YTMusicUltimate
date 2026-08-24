@@ -1,12 +1,36 @@
 #import <UIKit/UIKit.h>
+#import <MediaPlayer/MediaPlayer.h>
 #import <objc/runtime.h>
 
+#import "YTMUObjectiveCExceptionGuard.h"
 #import "YTMUNativePlaybackAdapter.h"
+#import "YTMUOfflineDiagnostics.h"
 #import "YTMUPlaybackCoordinator.h"
 
-static void YTMUPrepareForNativePlayback(UIViewController *controller) {
-    [YTMUNativePlaybackAdapter.sharedAdapter registerPlayerViewController:controller];
-    [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+static BOOL YTMUPrepareForNativePlayback(UIViewController *controller) {
+    __block BOOL allowed = NO;
+    NSException *transitionException = nil;
+    BOOL completedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        [YTMUNativePlaybackAdapter.sharedAdapter registerPlayerViewController:controller];
+        allowed = [YTMUPlaybackCoordinator.sharedCoordinator prepareForNativePlayback];
+    }, &transitionException);
+    if (!completedSafely) {
+        YTMUOfflineDiagnosticsLogException(@"native-play-hook", nil, transitionException);
+    }
+    return completedSafely && allowed;
+}
+
+static BOOL YTMUPrepareForNativeWatchPlayback(UIViewController *controller) {
+    __block BOOL allowed = NO;
+    NSException *transitionException = nil;
+    BOOL completedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        [YTMUNativePlaybackAdapter.sharedAdapter registerWatchViewController:controller];
+        allowed = [YTMUPlaybackCoordinator.sharedCoordinator prepareForNativePlayback];
+    }, &transitionException);
+    if (!completedSafely) {
+        YTMUOfflineDiagnosticsLogException(@"native-watch-hook", nil, transitionException);
+    }
+    return completedSafely && allowed;
 }
 
 %group YTMUPlayerViewControllerHooks
@@ -19,17 +43,17 @@ static void YTMUPrepareForNativePlayback(UIViewController *controller) {
 }
 
 - (void)play {
-    YTMUPrepareForNativePlayback(self);
+    if (!YTMUPrepareForNativePlayback(self)) return;
     %orig;
 }
 
 - (void)resumePlayback {
-    YTMUPrepareForNativePlayback(self);
+    if (!YTMUPrepareForNativePlayback(self)) return;
     %orig;
 }
 
 - (void)replayWithSeekSource:(int)source {
-    YTMUPrepareForNativePlayback(self);
+    if (!YTMUPrepareForNativePlayback(self)) return;
     %orig(source);
 }
 
@@ -89,39 +113,43 @@ static void YTMUPrepareForNativePlayback(UIViewController *controller) {
 }
 
 - (long long)handlePlayCommand:(id)command {
-    [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    if (!YTMUPrepareForNativeWatchPlayback(self)) {
+        return MPRemoteCommandHandlerStatusCommandFailed;
+    }
     return %orig(command);
 }
 
 - (long long)handleTogglePlayPauseCommand:(id)command {
     if (!YTMUNativePlaybackAdapter.sharedAdapter.nativePlaybackAudible) {
-        [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+        if (!YTMUPrepareForNativeWatchPlayback(self)) {
+            return MPRemoteCommandHandlerStatusCommandFailed;
+        }
     }
     return %orig(command);
 }
 
 - (void)didTapPlayButton {
-    [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    if (!YTMUPrepareForNativeWatchPlayback(self)) return;
     %orig;
 }
 
 - (void)watchViewDidTapPlayButton:(id)view {
-    [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    if (!YTMUPrepareForNativeWatchPlayback(self)) return;
     %orig(view);
 }
 
 - (void)loadWithModel:(id)model fromView:(id)view expand:(BOOL)expand startPlayback:(BOOL)startPlayback {
-    if (startPlayback) [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    if (startPlayback && !YTMUPrepareForNativeWatchPlayback(self)) return;
     %orig(model, view, expand, startPlayback);
 }
 
 - (void)loadWithModel:(id)model fromView:(id)view pageLayout:(long long)layout startPlayback:(BOOL)startPlayback {
-    if (startPlayback) [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    if (startPlayback && !YTMUPrepareForNativeWatchPlayback(self)) return;
     %orig(model, view, layout, startPlayback);
 }
 
 - (void)loadWithModel:(id)model startPlayback:(BOOL)startPlayback {
-    if (startPlayback) [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    if (startPlayback && !YTMUPrepareForNativeWatchPlayback(self)) return;
     %orig(model, startPlayback);
 }
 

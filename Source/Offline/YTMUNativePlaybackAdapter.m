@@ -22,10 +22,13 @@
 @property (nonatomic, strong) NSMapTable<UIViewController *, YTMUNativeMiniPlayerSnapshot *> *miniPlayerSnapshots;
 @property (nonatomic, assign) BOOL miniPlayerSuppressed;
 @property (nonatomic, assign, readwrite, getter=isNativePlaybackAudible) BOOL nativePlaybackAudible;
+- (void)showToastMessage:(NSString *)message;
 @end
 
 
 @implementation YTMUNativePlaybackAdapter
+
+@synthesize nativePlaybackAudible = _nativePlaybackAudible;
 
 + (YTMUNativePlaybackAdapter *)sharedAdapter {
     static YTMUNativePlaybackAdapter *adapter = nil;
@@ -141,9 +144,9 @@
     UIViewController *watch = self.watchViewController;
     SEL selector = NSSelectorFromString(@"isPlaybackVideoPlaying");
     if (watch == nil || ![watch respondsToSelector:selector]) {
-        return self.nativePlaybackAudible;
+        return self->_nativePlaybackAudible;
     }
-    __block BOOL isPlaying = self.nativePlaybackAudible;
+    __block BOOL isPlaying = self->_nativePlaybackAudible;
     NSException *stateException = nil;
     BOOL readSafely = YTMUPerformObjectiveCBlockSafely(^{
         BOOL (*sendBool)(id, SEL) = (void *)objc_msgSend;
@@ -155,6 +158,16 @@
               stateException.reason);
     }
     return isPlaying;
+}
+
+- (BOOL)isNativePlaybackAudible {
+    __block BOOL audible = NO;
+    [self performOnMainSynchronously:^{
+        BOOL cachedPlayback = self->_nativePlaybackAudible;
+        BOOL reportedPlayback = [self watchControllerReportsPlayback];
+        audible = cachedPlayback || reportedPlayback;
+    }];
+    return audible;
 }
 
 - (BOOL)requestNativePauseForOfflinePlayback:(NSError **)error {
@@ -236,7 +249,7 @@
 
 - (void)refreshNativePlaybackState {
     [self performOnMainSynchronously:^{
-        BOOL wasPlaying = self.nativePlaybackAudible;
+        BOOL wasPlaying = self->_nativePlaybackAudible;
         BOOL isPlaying = [self watchControllerReportsPlayback];
         self.nativePlaybackAudible = isPlaying;
         if (isPlaying && !wasPlaying) {
@@ -248,16 +261,31 @@
 }
 
 - (void)showOfflineEndedForNativeToast {
+    [self showToastMessage:@"오프라인 재생 종료됨 · YouTube Music으로 전환"];
+}
+
+- (void)showNativeTransitionFailureWithMessage:(NSString *)message {
+    [self showToastMessage:message];
+}
+
+- (void)showToastMessage:(NSString *)message {
+    if (message.length == 0) return;
     [self performOnMainSynchronously:^{
-        YTMUPerformObjectiveCBlockSafely(^{
+        NSException *toastException = nil;
+        BOOL shownSafely = YTMUPerformObjectiveCBlockSafely(^{
             Class toastClass = NSClassFromString(@"YTMToastController");
             SEL selector = NSSelectorFromString(@"showMessage:");
             id toast = toastClass == Nil ? nil : [[toastClass alloc] init];
             if (toast != nil && [toast respondsToSelector:selector]) {
                 void (*sendMessage)(id, SEL, id) = (void *)objc_msgSend;
-                sendMessage(toast, selector, @"오프라인 재생 종료됨 · YouTube Music으로 전환");
+                sendMessage(toast, selector, message);
             }
-        }, NULL);
+        }, &toastException);
+        if (!shownSafely) {
+            NSLog(@"[YTMusicUltimate] Contained native transition toast exception %@: %@",
+                  toastException.name,
+                  toastException.reason);
+        }
     }];
 }
 

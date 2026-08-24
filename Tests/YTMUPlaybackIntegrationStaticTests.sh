@@ -6,6 +6,15 @@ hooks="$repo_root/Source/Offline/YTMUOfflinePlaybackHooks.x"
 manager="$repo_root/Source/Offline/YTMUOfflinePlaybackManager.m"
 adapter="$repo_root/Source/Offline/YTMUNativePlaybackAdapter.m"
 guard="$repo_root/Source/Offline/YTMUObjectiveCExceptionGuard.m"
+mini_player="$repo_root/Source/Offline/YTMUOfflineMiniPlayerView.m"
+now_playing="$repo_root/Source/Offline/YTMUOfflineNowPlayingViewController.m"
+visual_policy="$repo_root/Source/Offline/YTMUOfflinePlayerVisualPolicy.m"
+downloads="$repo_root/Source/Prefs/YTMDownloads.m"
+
+if [[ ! -f "$visual_policy" ]]; then
+  echo "Offline player visual policy is required" >&2
+  exit 1
+fi
 
 if grep -Fq '%hook AVPlayer' "$hooks"; then
   echo "Global AVPlayer playback detection must not be used" >&2
@@ -14,7 +23,10 @@ fi
 
 grep -Fq '%hook YTPlayerViewController' "$hooks"
 grep -Fq '%hook YTMWatchViewController' "$hooks"
-grep -Fq 'nativePlaybackWillStart' "$hooks"
+grep -Fq 'prepareForNativePlayback' "$hooks"
+grep -Fq 'if (!YTMUPrepareForNativePlayback(self)) return;' "$hooks"
+grep -Fq 'MPRemoteCommandHandlerStatusCommandFailed' "$hooks"
+grep -Fq 'YTMUPerformObjectiveCBlockSafely' "$hooks"
 grep -Fq 'playbackControllerDidPlay' "$hooks"
 grep -Fq 'playbackControllerDidPause' "$hooks"
 
@@ -53,4 +65,16 @@ grep -Fq 'fallBackToSharedMediaControls' "$manager"
 grep -Fq 'loadCurrentTrackAndPlayUnchecked' "$manager"
 grep -Fq 'YTMUPerformObjectiveCBlockSafely' "$adapter"
 grep -Fq 'if (self.miniPlayerSuppressed == suppressed) return;' "$adapter"
+grep -Fq 'showNativeTransitionFailureWithMessage:' "$adapter"
+grep -Fq 'YTMUOfflineMiniPlayerHeight' "$mini_player"
+grep -Fq 'heightConstraint.constant' "$mini_player"
+grep -Fq 'YTMUOfflineArtworkPaletteProvider' "$now_playing"
+grep -Fq 'NSCache' "$now_playing"
+grep -Fq 'dispatch_get_global_queue' "$now_playing"
+grep -Fq 'accessibilityLabel = @"플레이어 축소"' "$now_playing"
+grep -Fq 'YTMUOfflinePlaybackDidChangeNotification' "$downloads"
+grep -Fq 'YTMUDownloadsSectionPlaylists' "$downloads"
+grep -Fq 'YTMUDownloadsSectionTracks' "$downloads"
+grep -Fq 'YTMUDownloadsSectionFileActions' "$downloads"
+grep -Fq 'YTMUOfflineDiagnostics' "$manager"
 echo "Playback integration static tests passed"

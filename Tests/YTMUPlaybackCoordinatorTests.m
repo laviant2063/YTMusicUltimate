@@ -27,6 +27,7 @@ static NSUInteger failures = 0;
 @property (nonatomic, assign) BOOL nativeMiniPlayerSuppressed;
 @property (nonatomic, assign) NSUInteger pauseRequestCount;
 @property (nonatomic, assign) NSUInteger toastCount;
+@property (nonatomic, assign) NSUInteger transitionFailureCount;
 @property (nonatomic, assign) NSUInteger suppressionUpdateCount;
 @end
 
@@ -51,6 +52,9 @@ static NSUInteger failures = 0;
 - (void)showOfflineEndedForNativeToast {
     self.toastCount++;
 }
+- (void)showNativeTransitionFailureWithMessage:(__unused NSString *)message {
+    self.transitionFailureCount++;
+}
 @end
 
 @interface YTMUTestOfflineController : NSObject <YTMUOfflineSessionControlling>
@@ -58,6 +62,8 @@ static NSUInteger failures = 0;
 @property (nonatomic, assign) NSUInteger sessionStateReadCount;
 @property (nonatomic, assign) NSUInteger endCount;
 @property (nonatomic, assign) YTMUOfflineSessionEndReason lastReason;
+@property (nonatomic, assign) BOOL teardownSucceeds;
+@property (nonatomic, copy) void (^duringEnd)(void);
 @end
 
 @implementation YTMUTestOfflineController
@@ -71,7 +77,10 @@ static NSUInteger failures = 0;
     }
     self.endCount++;
     self.lastReason = reason;
-    self.offlineSessionActive = NO;
+    if (self.duringEnd != nil) self.duringEnd();
+    if (self.teardownSucceeds) {
+        self.offlineSessionActive = NO;
+    }
 }
 @end
 
@@ -80,6 +89,7 @@ static YTMUPlaybackCoordinator *MakeCoordinator(YTMUTestNativeAdapter **nativeOu
     YTMUTestNativeAdapter *native = [[YTMUTestNativeAdapter alloc] init];
     native.pauseRequestSucceeds = YES;
     YTMUTestOfflineController *offline = [[YTMUTestOfflineController alloc] init];
+    offline.teardownSucceeds = YES;
     if (nativeOut != NULL) *nativeOut = native;
     if (offlineOut != NULL) *offlineOut = offline;
     return [[YTMUPlaybackCoordinator alloc] initWithNativeAdapter:native offlineController:offline];
@@ -176,7 +186,7 @@ static void testIdleNativeStartDoesNotTouchOfflineRuntime(void) {
     YTMUTestOfflineController *offline = nil;
     YTMUPlaybackCoordinator *coordinator = MakeCoordinator(&native, &offline);
 
-    [coordinator nativePlaybackWillStart];
+    ASSERT_TRUE([coordinator prepareForNativePlayback]);
 
     ASSERT_EQUAL_INTEGER(0, offline.sessionStateReadCount);
     ASSERT_EQUAL_INTEGER(0, native.suppressionUpdateCount);
@@ -200,7 +210,7 @@ static void testOfflineToNativeEndsOfflineBeforeNativeStarts(void) {
     [coordinator offlinePlaybackDidStart];
     offline.offlineSessionActive = YES;
 
-    [coordinator nativePlaybackWillStart];
+    ASSERT_TRUE([coordinator prepareForNativePlayback]);
     ASSERT_EQUAL_INTEGER(1, offline.endCount);
     ASSERT_EQUAL_INTEGER(YTMUOfflineSessionEndReasonNativePlaybackStarted, offline.lastReason);
     ASSERT_TRUE(!offline.offlineSessionActive);
@@ -211,6 +221,55 @@ static void testOfflineToNativeEndsOfflineBeforeNativeStarts(void) {
     [coordinator nativePlaybackDidStart];
     ASSERT_EQUAL_INTEGER(YTMUPlaybackOwnerNative, coordinator.owner);
     ASSERT_EQUAL_INTEGER(1, native.toastCount);
+}
+
+static void testNativePreparationRejectsFailedOfflineTeardown(void) {
+    YTMUTestNativeAdapter *native = nil;
+    YTMUTestOfflineController *offline = nil;
+    YTMUPlaybackCoordinator *coordinator = MakeCoordinator(&native, &offline);
+    [coordinator requestOfflinePlaybackWithCompletion:^(__unused BOOL granted, __unused NSError *error) {}];
+    [coordinator offlinePlaybackDidStart];
+    offline.offlineSessionActive = YES;
+    offline.teardownSucceeds = NO;
+
+    ASSERT_TRUE(![coordinator prepareForNativePlayback]);
+    ASSERT_EQUAL_INTEGER(1, offline.endCount);
+    ASSERT_TRUE(offline.offlineSessionActive);
+    ASSERT_EQUAL_INTEGER(YTMUPlaybackOwnerOffline, coordinator.owner);
+    ASSERT_TRUE(native.nativeMiniPlayerSuppressed);
+    ASSERT_EQUAL_INTEGER(1, native.transitionFailureCount);
+}
+
+static void testRepeatedNativePreparationDoesNotRepeatOfflineTeardown(void) {
+    YTMUTestOfflineController *offline = nil;
+    YTMUPlaybackCoordinator *coordinator = MakeCoordinator(NULL, &offline);
+    [coordinator requestOfflinePlaybackWithCompletion:^(__unused BOOL granted, __unused NSError *error) {}];
+    [coordinator offlinePlaybackDidStart];
+    offline.offlineSessionActive = YES;
+
+    ASSERT_TRUE([coordinator prepareForNativePlayback]);
+    ASSERT_TRUE([coordinator prepareForNativePlayback]);
+    ASSERT_EQUAL_INTEGER(1, offline.endCount);
+    ASSERT_EQUAL_INTEGER(YTMUPlaybackOwnerTransitioning, coordinator.owner);
+    ASSERT_EQUAL_INTEGER(YTMUPlaybackOwnerNative, coordinator.targetOwner);
+}
+
+static void testReentrantNativePreparationIsRejectedDuringTeardown(void) {
+    YTMUTestOfflineController *offline = nil;
+    YTMUPlaybackCoordinator *coordinator = MakeCoordinator(NULL, &offline);
+    [coordinator requestOfflinePlaybackWithCompletion:^(__unused BOOL granted, __unused NSError *error) {}];
+    [coordinator offlinePlaybackDidStart];
+    offline.offlineSessionActive = YES;
+
+    __weak YTMUPlaybackCoordinator *weakCoordinator = coordinator;
+    __block BOOL nestedRequestAllowed = YES;
+    offline.duringEnd = ^{
+        nestedRequestAllowed = [weakCoordinator prepareForNativePlayback];
+    };
+
+    ASSERT_TRUE([coordinator prepareForNativePlayback]);
+    ASSERT_TRUE(!nestedRequestAllowed);
+    ASSERT_EQUAL_INTEGER(1, offline.endCount);
 }
 
 static void testOfflineEndIsIdempotent(void) {
@@ -260,6 +319,9 @@ int main(void) {
         testNativeStartCancelsPendingOfflineGrant();
         testIdleNativeStartDoesNotTouchOfflineRuntime();
         testOfflineToNativeEndsOfflineBeforeNativeStarts();
+        testNativePreparationRejectsFailedOfflineTeardown();
+        testRepeatedNativePreparationDoesNotRepeatOfflineTeardown();
+        testReentrantNativePreparationIsRejectedDuringTeardown();
         testOfflineEndIsIdempotent();
         testNativePauseRetainsNativeOwnership();
         testUnexpectedNativeStartStillEndsOffline();

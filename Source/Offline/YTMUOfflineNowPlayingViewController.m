@@ -1,8 +1,10 @@
 #import "YTMUOfflineNowPlayingViewController.h"
 
 #import <AVKit/AVKit.h>
+#import <ImageIO/ImageIO.h>
 
 #import "YTMUOfflinePlaybackManager.h"
+#import "YTMUOfflinePlayerVisualPolicy.h"
 #import "YTMUOfflinePlayerMenu.h"
 #import "../Headers/Localization.h"
 
@@ -29,34 +31,88 @@ static UIButton *YTMUOfflineControlButton(NSString *symbolName, CGFloat pointSiz
     return button;
 }
 
-static UIColor *YTMUOfflineArtworkColor(UIImage *image) {
-    if (image.CGImage == nil) {
-        return [UIColor colorWithRed:0.035 green:0.09 blue:0.20 alpha:1.0];
-    }
-    unsigned char pixel[4] = {0, 0, 0, 0};
+static void YTMUOfflineSampleImageColor(CGImageRef image, uint8_t pixel[4]) {
+    if (image == NULL) return;
     CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
     CGContextRef context = CGBitmapContextCreate(pixel, 1, 1, 8, 4, colorSpace,
         kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
     CGColorSpaceRelease(colorSpace);
-    if (context == NULL) {
-        return [UIColor colorWithRed:0.035 green:0.09 blue:0.20 alpha:1.0];
-    }
-    CGContextDrawImage(context, CGRectMake(0, 0, 1, 1), image.CGImage);
+    if (context == NULL) return;
+    CGContextDrawImage(context, CGRectMake(0, 0, 1, 1), image);
     CGContextRelease(context);
-    CGFloat red = pixel[0] / 255.0;
-    CGFloat green = pixel[1] / 255.0;
-    CGFloat blue = pixel[2] / 255.0;
-    CGFloat maximum = MAX(red, MAX(green, blue));
-    if (maximum < 0.12) {
-        red += 0.08;
-        green += 0.08;
-        blue += 0.11;
-    }
-    return [UIColor colorWithRed:MIN(0.32, red * 0.45)
-                           green:MIN(0.32, green * 0.45)
-                            blue:MIN(0.36, blue * 0.5)
-                           alpha:1.0];
 }
+
+@interface YTMUOfflineArtworkPaletteResult : NSObject
+@property (nonatomic, strong, nullable) UIImage *image;
+@property (nonatomic, strong) UIColor *backgroundColor;
+@end
+
+@implementation YTMUOfflineArtworkPaletteResult
+@end
+
+typedef void (^YTMUOfflineArtworkPaletteCompletion)(YTMUOfflineArtworkPaletteResult *result);
+
+@interface YTMUOfflineArtworkPaletteProvider : NSObject
+@property (nonatomic, strong) NSCache<NSString *, YTMUOfflineArtworkPaletteResult *> *cache;
++ (instancetype)sharedProvider;
+- (void)loadArtworkAtURL:(nullable NSURL *)url
+                cacheKey:(NSString *)cacheKey
+              completion:(YTMUOfflineArtworkPaletteCompletion)completion;
+@end
+
+@implementation YTMUOfflineArtworkPaletteProvider
+
++ (instancetype)sharedProvider {
+    static YTMUOfflineArtworkPaletteProvider *provider = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        provider = [[YTMUOfflineArtworkPaletteProvider alloc] init];
+        provider.cache = [[NSCache alloc] init];
+        provider.cache.countLimit = 40;
+    });
+    return provider;
+}
+
+- (void)loadArtworkAtURL:(NSURL *)url
+                cacheKey:(NSString *)cacheKey
+              completion:(YTMUOfflineArtworkPaletteCompletion)completion {
+    if (completion == nil || cacheKey.length == 0) return;
+    YTMUOfflineArtworkPaletteResult *cached = [self.cache objectForKey:cacheKey];
+    if (cached != nil) {
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(cached); });
+        return;
+    }
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        CGImageRef image = NULL;
+        if (url != nil) {
+            CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+            if (source != NULL) {
+                image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+                CFRelease(source);
+            }
+        }
+        uint8_t pixel[4] = {0, 0, 0, 0};
+        YTMUOfflineSampleImageColor(image, pixel);
+        YTMUOfflinePaletteColor palette = YTMUOfflineDarkPaletteColor(pixel[0], pixel[1], pixel[2]);
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            YTMUOfflineArtworkPaletteResult *result = [[YTMUOfflineArtworkPaletteResult alloc] init];
+            if (image != NULL) {
+                result.image = [UIImage imageWithCGImage:image];
+                CGImageRelease(image);
+            }
+            result.backgroundColor = [UIColor colorWithRed:palette.red
+                                                     green:palette.green
+                                                      blue:palette.blue
+                                                     alpha:1.0];
+            [self.cache setObject:result forKey:cacheKey];
+            completion(result);
+        });
+    });
+}
+
+@end
 
 @interface YTMUOfflineNowPlayingViewController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) CAGradientLayer *gradientLayer;
@@ -75,6 +131,7 @@ static UIColor *YTMUOfflineArtworkColor(UIImage *image) {
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UILabel *queueLabel;
 @property (nonatomic, assign) BOOL dismissingAfterSessionEnd;
+@property (nonatomic, copy, nullable) NSString *artworkRequestIdentifier;
 @end
 
 
@@ -124,6 +181,7 @@ static UIColor *YTMUOfflineArtworkColor(UIImage *image) {
     routePicker.prioritizesVideoDevices = NO;
 
     self.moreButton = YTMUOfflineControlButton(@"ellipsis", 21);
+    self.moreButton.accessibilityLabel = YTMUOfflineLocalized(@"MORE", @"More");
     [self.moreButton addTarget:self action:@selector(showMore:) forControlEvents:UIControlEventTouchUpInside];
 
     self.artworkView = [[UIImageView alloc] init];
@@ -149,6 +207,7 @@ static UIColor *YTMUOfflineArtworkColor(UIImage *image) {
     self.progressSlider.translatesAutoresizingMaskIntoConstraints = NO;
     self.progressSlider.minimumTrackTintColor = UIColor.whiteColor;
     self.progressSlider.maximumTrackTintColor = [UIColor.whiteColor colorWithAlphaComponent:0.25];
+    self.progressSlider.accessibilityLabel = YTMUOfflineLocalized(@"PLAYBACK_POSITION", @"Playback position");
     [self.progressSlider addTarget:self action:@selector(seekFinished:) forControlEvents:
         UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
 
@@ -164,9 +223,18 @@ static UIColor *YTMUOfflineArtworkColor(UIImage *image) {
 
     self.shuffleButton = YTMUOfflineControlButton(@"shuffle", 21);
     self.previousButton = YTMUOfflineControlButton(@"backward.end.fill", 27);
-    self.playPauseButton = YTMUOfflineControlButton(@"play.circle.fill", 58);
+    self.playPauseButton = YTMUOfflineControlButton(@"play.fill", 27);
     self.nextButton = YTMUOfflineControlButton(@"forward.end.fill", 27);
     self.repeatButton = YTMUOfflineControlButton(@"repeat", 21);
+    self.shuffleButton.accessibilityLabel = YTMUOfflineLocalized(@"SHUFFLE", @"Shuffle");
+    self.previousButton.accessibilityLabel = YTMUOfflineLocalized(@"PREVIOUS", @"Previous");
+    self.playPauseButton.accessibilityLabel = YTMUOfflineLocalized(@"PLAY_PAUSE", @"Play or pause");
+    self.nextButton.accessibilityLabel = YTMUOfflineLocalized(@"NEXT", @"Next");
+    self.repeatButton.accessibilityLabel = YTMUOfflineLocalized(@"REPEAT", @"Repeat");
+    self.playPauseButton.backgroundColor = UIColor.whiteColor;
+    self.playPauseButton.tintColor = UIColor.blackColor;
+    self.playPauseButton.layer.cornerRadius = 32;
+    self.playPauseButton.layer.cornerCurve = kCACornerCurveContinuous;
     [self.shuffleButton addTarget:self action:@selector(toggleShuffle:) forControlEvents:UIControlEventTouchUpInside];
     [self.previousButton addTarget:self action:@selector(previous:) forControlEvents:UIControlEventTouchUpInside];
     [self.playPauseButton addTarget:self action:@selector(togglePlayback:) forControlEvents:UIControlEventTouchUpInside];
@@ -225,12 +293,12 @@ static UIColor *YTMUOfflineArtworkColor(UIImage *image) {
         [badgeStack.centerYAnchor constraintEqualToAnchor:minimizeButton.centerYAnchor],
         [routePicker.trailingAnchor constraintEqualToAnchor:self.moreButton.leadingAnchor constant:-2],
         [routePicker.centerYAnchor constraintEqualToAnchor:minimizeButton.centerYAnchor],
-        [routePicker.widthAnchor constraintEqualToConstant:42],
-        [routePicker.heightAnchor constraintEqualToConstant:42],
+        [routePicker.widthAnchor constraintEqualToConstant:44],
+        [routePicker.heightAnchor constraintEqualToConstant:44],
         [self.moreButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-5],
         [self.moreButton.centerYAnchor constraintEqualToAnchor:minimizeButton.centerYAnchor],
-        [self.moreButton.widthAnchor constraintEqualToConstant:42],
-        [self.moreButton.heightAnchor constraintEqualToConstant:42],
+        [self.moreButton.widthAnchor constraintEqualToConstant:44],
+        [self.moreButton.heightAnchor constraintEqualToConstant:44],
 
         [self.artworkView.topAnchor constraintEqualToAnchor:minimizeButton.bottomAnchor constant:13],
         [self.artworkView.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
@@ -258,6 +326,16 @@ static UIColor *YTMUOfflineArtworkColor(UIImage *image) {
         [controls.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:24],
         [controls.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-24],
         [controls.heightAnchor constraintEqualToConstant:64],
+        [self.shuffleButton.widthAnchor constraintEqualToConstant:44],
+        [self.shuffleButton.heightAnchor constraintEqualToConstant:44],
+        [self.previousButton.widthAnchor constraintEqualToConstant:44],
+        [self.previousButton.heightAnchor constraintEqualToConstant:44],
+        [self.playPauseButton.widthAnchor constraintEqualToConstant:64],
+        [self.playPauseButton.heightAnchor constraintEqualToConstant:64],
+        [self.nextButton.widthAnchor constraintEqualToConstant:44],
+        [self.nextButton.heightAnchor constraintEqualToConstant:44],
+        [self.repeatButton.widthAnchor constraintEqualToConstant:44],
+        [self.repeatButton.heightAnchor constraintEqualToConstant:44],
 
         [self.queueLabel.topAnchor constraintEqualToAnchor:controls.bottomAnchor constant:9],
         [self.queueLabel.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:18],
@@ -352,31 +430,64 @@ static UIColor *YTMUOfflineArtworkColor(UIImage *image) {
 }
 
 - (void)updatePlaybackUIReloadingQueue:(BOOL)reloadQueue {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self updatePlaybackUIReloadingQueue:reloadQueue];
+        });
+        return;
+    }
     YTMUOfflinePlaybackManager *manager = YTMUOfflinePlaybackManager.sharedManager;
     YTMUOfflineTrack *track = manager.currentTrack;
     self.titleLabel.text = track.title.length > 0 ? track.title : YTMUOfflineLocalized(@"NOTHING_PLAYING", @"Nothing Playing");
     self.artistLabel.text = track.artist ?: @"";
-    UIImage *artwork = nil;
-    if (track.artworkFileName.length > 0) {
-        NSURL *url = [YTMUOfflineLibrary.sharedLibrary.downloadsDirectoryURL
-            URLByAppendingPathComponent:track.artworkFileName];
-        artwork = [UIImage imageWithContentsOfFile:url.path];
+    NSString *artworkRequestIdentifier = track == nil ? nil : [NSString stringWithFormat:@"%@|%@",
+        track.trackID ?: @"", track.artworkFileName ?: @""];
+    if (![self.artworkRequestIdentifier isEqualToString:artworkRequestIdentifier]) {
+        self.artworkRequestIdentifier = artworkRequestIdentifier;
+        self.artworkView.image = [UIImage systemImageNamed:@"music.note"];
+        self.artworkView.tintColor = [UIColor.whiteColor colorWithAlphaComponent:0.65];
+        YTMUOfflinePaletteColor fallback = YTMUOfflineDarkPaletteColor(0, 0, 0);
+        UIColor *fallbackColor = [UIColor colorWithRed:fallback.red green:fallback.green
+                                                  blue:fallback.blue alpha:1.0];
+        self.gradientLayer.colors = @[
+            (id)fallbackColor.CGColor,
+            (id)[fallbackColor colorWithAlphaComponent:0.45].CGColor,
+            (id)UIColor.blackColor.CGColor,
+        ];
+
+        if (artworkRequestIdentifier.length > 0) {
+            NSURL *artworkURL = track.artworkFileName.length == 0 ? nil
+                : [YTMUOfflineLibrary.sharedLibrary.downloadsDirectoryURL
+                    URLByAppendingPathComponent:track.artworkFileName];
+            __weak typeof(self) weakSelf = self;
+            [[YTMUOfflineArtworkPaletteProvider sharedProvider]
+                loadArtworkAtURL:artworkURL cacheKey:artworkRequestIdentifier
+                completion:^(YTMUOfflineArtworkPaletteResult *result) {
+                    __strong typeof(weakSelf) strongSelf = weakSelf;
+                    if (strongSelf == nil
+                        || ![strongSelf.artworkRequestIdentifier isEqualToString:artworkRequestIdentifier]
+                        || ![YTMUOfflinePlaybackManager.sharedManager.currentTrack.trackID
+                            isEqualToString:track.trackID]) {
+                        return;
+                    }
+                    strongSelf.artworkView.image = result.image ?: [UIImage systemImageNamed:@"music.note"];
+                    strongSelf.gradientLayer.colors = @[
+                        (id)result.backgroundColor.CGColor,
+                        (id)[result.backgroundColor colorWithAlphaComponent:0.45].CGColor,
+                        (id)UIColor.blackColor.CGColor,
+                    ];
+                }];
+        }
     }
-    self.artworkView.image = artwork ?: [UIImage systemImageNamed:@"music.note"];
-    self.artworkView.tintColor = [UIColor.whiteColor colorWithAlphaComponent:0.65];
-    UIColor *artworkColor = YTMUOfflineArtworkColor(artwork);
-    self.gradientLayer.colors = @[
-        (id)artworkColor.CGColor,
-        (id)[artworkColor colorWithAlphaComponent:0.45].CGColor,
-        (id)UIColor.blackColor.CGColor,
-    ];
 
     UIImageSymbolConfiguration *playConfiguration = [UIImageSymbolConfiguration
-        configurationWithPointSize:58 weight:UIImageSymbolWeightRegular];
-    NSString *playSymbol = manager.playing ? @"pause.circle.fill" : @"play.circle.fill";
+        configurationWithPointSize:27 weight:UIImageSymbolWeightBold];
+    NSString *playSymbol = manager.playing ? @"pause.fill" : @"play.fill";
     [self.playPauseButton setImage:[UIImage systemImageNamed:playSymbol withConfiguration:playConfiguration]
                           forState:UIControlStateNormal];
     self.shuffleButton.tintColor = manager.shuffled ? UIColor.systemPinkColor : UIColor.whiteColor;
+    self.shuffleButton.accessibilityValue = manager.shuffled
+        ? YTMUOfflineLocalized(@"ON", @"On") : YTMUOfflineLocalized(@"OFF", @"Off");
     NSString *repeatSymbol = manager.repeatMode == YTMUOfflineRepeatModeOne ? @"repeat.1" : @"repeat";
     UIImageSymbolConfiguration *repeatConfiguration = [UIImageSymbolConfiguration
         configurationWithPointSize:21 weight:UIImageSymbolWeightSemibold];
@@ -384,6 +495,19 @@ static UIColor *YTMUOfflineArtworkColor(UIImage *image) {
                        forState:UIControlStateNormal];
     self.repeatButton.tintColor = manager.repeatMode == YTMUOfflineRepeatModeOff
         ? UIColor.whiteColor : UIColor.systemPinkColor;
+    switch (manager.repeatMode) {
+        case YTMUOfflineRepeatModeOff:
+            self.repeatButton.accessibilityValue = YTMUOfflineLocalized(@"REPEAT_OFF", @"Off");
+            break;
+        case YTMUOfflineRepeatModeAll:
+            self.repeatButton.accessibilityValue = YTMUOfflineLocalized(@"REPEAT_ALL", @"All");
+            break;
+        case YTMUOfflineRepeatModeOne:
+            self.repeatButton.accessibilityValue = YTMUOfflineLocalized(@"REPEAT_ONE", @"One song");
+            break;
+    }
+    self.playPauseButton.accessibilityValue = manager.playing
+        ? YTMUOfflineLocalized(@"PLAYING", @"Playing") : YTMUOfflineLocalized(@"PAUSED", @"Paused");
 
     if (!self.progressSlider.tracking) {
         self.progressSlider.maximumValue = (float)MAX(1.0, manager.duration);

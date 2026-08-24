@@ -2,6 +2,7 @@
 
 #import "YTMUOfflineLibrary.h"
 #import "YTMUOfflineMiniPlayerView.h"
+#import "YTMUOfflineNowPlayingViewController.h"
 #import "YTMUOfflinePlaybackManager.h"
 #import "../Headers/Localization.h"
 
@@ -32,6 +33,9 @@ static UIButton *YTMUOfflinePlaylistHeaderButton(NSString *title, NSString *symb
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) YTMUOfflineMiniPlayerView *miniPlayer;
 @property (nonatomic, strong) UILabel *emptyLabel;
+@property (nonatomic, assign) BOOL presentPlayerWhenSessionStarts;
+- (void)prepareToPresentOfflinePlayer;
+- (void)presentPendingOfflinePlayerIfPossible;
 @end
 
 @implementation YTMUOfflinePlaylistViewController
@@ -106,6 +110,10 @@ static UIButton *YTMUOfflinePlaylistHeaderButton(NSString *title, NSString *symb
 
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(libraryChanged:)
                                                  name:YTMUOfflineLibraryDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playbackChanged:)
+                                                 name:YTMUOfflinePlaybackDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playbackFailed:)
+                                                 name:YTMUOfflinePlaybackErrorNotification object:nil];
     [self reloadTracks];
 }
 
@@ -124,6 +132,42 @@ static UIButton *YTMUOfflinePlaylistHeaderButton(NSString *title, NSString *symb
 
 - (void)libraryChanged:(NSNotification *)notification {
     [self reloadTracks];
+}
+
+- (void)playbackChanged:(__unused NSNotification *)notification {
+    dispatch_async(dispatch_get_main_queue(), ^{ [self presentPendingOfflinePlayerIfPossible]; });
+}
+
+- (void)playbackFailed:(NSNotification *)notification {
+    self.presentPlayerWhenSessionStarts = NO;
+    NSString *message = notification.userInfo[@"message"];
+    if (message.length == 0) return;
+    NSError *error = [NSError errorWithDomain:@"YTMUOfflinePlaybackErrorDomain" code:1
+                                     userInfo:@{NSLocalizedDescriptionKey: message}];
+    [self showError:error];
+}
+
+- (void)prepareToPresentOfflinePlayer {
+    self.presentPlayerWhenSessionStarts = YES;
+}
+
+- (void)presentPendingOfflinePlayerIfPossible {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self presentPendingOfflinePlayerIfPossible]; });
+        return;
+    }
+    if (!self.presentPlayerWhenSessionStarts) return;
+    YTMUOfflinePlaybackManager *manager = YTMUOfflinePlaybackManager.sharedManager;
+    if (!manager.offlineSessionActive || manager.currentTrack == nil || self.viewIfLoaded.window == nil) return;
+    if (self.presentedViewController != nil) {
+        self.presentPlayerWhenSessionStarts = NO;
+        return;
+    }
+    self.presentPlayerWhenSessionStarts = NO;
+    YTMUOfflineNowPlayingViewController *controller = [[YTMUOfflineNowPlayingViewController alloc] init];
+    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:controller];
+    navigation.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:navigation animated:YES completion:nil];
 }
 
 - (void)reloadTracks {
@@ -152,12 +196,14 @@ static UIButton *YTMUOfflinePlaylistHeaderButton(NSString *title, NSString *symb
 
 - (void)playAll:(id)sender {
     if (self.tracks.count == 0) return;
+    [self prepareToPresentOfflinePlayer];
     [YTMUOfflinePlaybackManager.sharedManager playTracks:self.tracks startingAtIndex:0 shuffle:NO];
 }
 
 - (void)shufflePlay:(id)sender {
     if (self.tracks.count == 0) return;
     NSInteger startingIndex = arc4random_uniform((uint32_t)self.tracks.count);
+    [self prepareToPresentOfflinePlayer];
     [YTMUOfflinePlaybackManager.sharedManager playTracks:self.tracks startingAtIndex:startingIndex shuffle:YES];
 }
 
@@ -196,6 +242,7 @@ static UIButton *YTMUOfflinePlaylistHeaderButton(NSString *title, NSString *symb
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [self prepareToPresentOfflinePlayer];
     [YTMUOfflinePlaybackManager.sharedManager playTracks:self.tracks startingAtIndex:indexPath.row shuffle:NO];
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 }
@@ -210,6 +257,7 @@ static UIButton *YTMUOfflinePlaylistHeaderButton(NSString *title, NSString *symb
                                                  image:[UIImage systemImageNamed:@"play.circle"]
                                             identifier:nil
                                                handler:^(__unused UIAction *action) {
+            [weakSelf prepareToPresentOfflinePlayer];
             [YTMUOfflinePlaybackManager.sharedManager playSingleTrack:track];
         }];
         if (weakSelf.playlistID == nil) {

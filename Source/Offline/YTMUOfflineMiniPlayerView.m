@@ -2,6 +2,7 @@
 
 #import "YTMUOfflineNowPlayingViewController.h"
 #import "YTMUOfflinePlaybackManager.h"
+#import "YTMUOfflinePlayerVisualPolicy.h"
 #import "YTMUOfflinePlayerMenu.h"
 #import "../Headers/Localization.h"
 
@@ -18,6 +19,7 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
 @property (nonatomic, strong) UIButton *playPauseButton;
 @property (nonatomic, strong) UIButton *nextButton;
 @property (nonatomic, strong) UIButton *moreButton;
+@property (nonatomic, strong) NSLayoutConstraint *heightConstraint;
 @property (nonatomic, assign) BOOL sessionActive;
 @end
 
@@ -35,6 +37,8 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
         self.layer.borderWidth = 0.5;
         self.layer.borderColor = [UIColor.whiteColor colorWithAlphaComponent:0.14].CGColor;
         self.clipsToBounds = YES;
+        _heightConstraint = [self.heightAnchor constraintEqualToConstant:0];
+        _heightConstraint.active = YES;
 
         _artworkView = [[UIImageView alloc] init];
         _artworkView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -68,17 +72,20 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
         _playPauseButton = [UIButton buttonWithType:UIButtonTypeSystem];
         _playPauseButton.translatesAutoresizingMaskIntoConstraints = NO;
         _playPauseButton.tintColor = UIColor.whiteColor;
+        _playPauseButton.accessibilityLabel = YTMUMiniPlayerLocalized(@"PLAY_PAUSE", @"Play or pause");
         [_playPauseButton addTarget:self action:@selector(togglePlayback:) forControlEvents:UIControlEventTouchUpInside];
 
         _nextButton = [UIButton buttonWithType:UIButtonTypeSystem];
         _nextButton.translatesAutoresizingMaskIntoConstraints = NO;
         _nextButton.tintColor = UIColor.whiteColor;
+        _nextButton.accessibilityLabel = YTMUMiniPlayerLocalized(@"NEXT", @"Next");
         [_nextButton setImage:[UIImage systemImageNamed:@"forward.end.fill"] forState:UIControlStateNormal];
         [_nextButton addTarget:self action:@selector(next:) forControlEvents:UIControlEventTouchUpInside];
 
         _moreButton = [UIButton buttonWithType:UIButtonTypeSystem];
         _moreButton.translatesAutoresizingMaskIntoConstraints = NO;
         _moreButton.tintColor = UIColor.whiteColor;
+        _moreButton.accessibilityLabel = YTMUMiniPlayerLocalized(@"MORE", @"More");
         [_moreButton setImage:[UIImage systemImageNamed:@"ellipsis"] forState:UIControlStateNormal];
         [_moreButton addTarget:self action:@selector(showMore:) forControlEvents:UIControlEventTouchUpInside];
 
@@ -114,15 +121,15 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
 
             [_playPauseButton.trailingAnchor constraintEqualToAnchor:_nextButton.leadingAnchor constant:-1],
             [_playPauseButton.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-            [_playPauseButton.widthAnchor constraintEqualToConstant:40],
+            [_playPauseButton.widthAnchor constraintEqualToConstant:44],
             [_playPauseButton.heightAnchor constraintEqualToConstant:48],
             [_nextButton.trailingAnchor constraintEqualToAnchor:_moreButton.leadingAnchor constant:-1],
             [_nextButton.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-            [_nextButton.widthAnchor constraintEqualToConstant:38],
+            [_nextButton.widthAnchor constraintEqualToConstant:44],
             [_nextButton.heightAnchor constraintEqualToConstant:48],
             [_moreButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-6],
             [_moreButton.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-            [_moreButton.widthAnchor constraintEqualToConstant:34],
+            [_moreButton.widthAnchor constraintEqualToConstant:44],
             [_moreButton.heightAnchor constraintEqualToConstant:48],
         ]];
 
@@ -134,7 +141,7 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
 }
 
 - (CGSize)intrinsicContentSize {
-    return CGSizeMake(UIViewNoIntrinsicMetric, self.sessionActive ? 78 : 0);
+    return CGSizeMake(UIViewNoIntrinsicMetric, UIViewNoIntrinsicMetric);
 }
 
 - (void)dealloc {
@@ -155,13 +162,19 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
 }
 
 - (void)updateUI {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self updateUI]; });
+        return;
+    }
     YTMUOfflinePlaybackManager *manager = YTMUOfflinePlaybackManager.sharedManager;
     YTMUOfflineTrack *track = manager.currentTrack;
-    BOOL active = manager.offlineSessionActive && track != nil;
+    BOOL active = YTMUOfflineMiniPlayerHeight(manager.offlineSessionActive, track != nil) > 0;
     BOOL visibilityChanged = active != self.sessionActive;
     self.sessionActive = active;
     self.hidden = !active;
     self.accessibilityElementsHidden = !active;
+    self.heightConstraint.constant = YTMUOfflineMiniPlayerHeight(manager.offlineSessionActive,
+                                                                  track != nil);
 
     self.titleLabel.text = track.title.length > 0 ? track.title : YTMUMiniPlayerLocalized(@"OFFLINE_PLAYER", @"Offline Player");
     self.artistLabel.text = track.artist ?: @"";
@@ -175,12 +188,14 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
     self.artworkView.tintColor = [UIColor.whiteColor colorWithAlphaComponent:0.65];
     NSString *symbol = manager.playing ? @"pause.fill" : @"play.fill";
     [self.playPauseButton setImage:[UIImage systemImageNamed:symbol] forState:UIControlStateNormal];
+    self.playPauseButton.accessibilityValue = manager.playing
+        ? YTMUMiniPlayerLocalized(@"PLAYING", @"Playing")
+        : YTMUMiniPlayerLocalized(@"PAUSED", @"Paused");
     self.playPauseButton.enabled = active;
     self.nextButton.enabled = active && manager.queue.count > 1;
     self.moreButton.enabled = active;
 
     if (visibilityChanged) {
-        [self invalidateIntrinsicContentSize];
         [self.superview setNeedsLayout];
         [UIView animateWithDuration:0.2 animations:^{ [self.superview layoutIfNeeded]; }];
     }

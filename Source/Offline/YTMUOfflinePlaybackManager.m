@@ -1,6 +1,7 @@
 #import "YTMUOfflinePlaybackManager.h"
 
 #import "YTMUObjectiveCExceptionGuard.h"
+#import "YTMUOfflineDiagnostics.h"
 
 #import <AVKit/AVKit.h>
 #import <MediaPlayer/MediaPlayer.h>
@@ -23,7 +24,7 @@ static NSError *YTMUOfflineErrorFromException(NSException *exception, NSString *
 
 static void YTMULogContainedException(NSException *exception, NSString *operation) {
     if (exception == nil) return;
-    NSLog(@"[YTMusicUltimate] Contained %@ exception %@: %@", operation, exception.name, exception.reason);
+    YTMUOfflineDiagnosticsLogException(operation, nil, exception);
 }
 
 @interface YTMUOfflinePlaybackManager ()
@@ -222,7 +223,9 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
 }
 
 - (void)beginPlayingAfterOwnershipGranted {
+    NSString *trackID = self.currentTrack.trackID;
     if (self.currentTrack == nil || self.player.currentItem == nil) {
+        YTMUOfflineDiagnosticsLog(@"play-request", trackID, @"rejected-no-current-item");
         [self endOfflineSessionWithReason:YTMUOfflineSessionEndReasonFatalError];
         [self postErrorMessage:@"Choose a downloaded song first." error:nil];
         return;
@@ -232,19 +235,23 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
     NSException *startException = nil;
     BOOL startCompletedSafely = YTMUPerformObjectiveCBlockSafely(^{
         self.offlineSessionActive = YES;
+        YTMUOfflineDiagnosticsLog(@"audio-session", trackID, @"activation-requested");
         audioSessionActivated = [self activateAudioSession];
         if (!audioSessionActivated) return;
         [self activateOfflineMediaControls];
         if (self.duration > 0 && self.currentTime >= self.duration - 0.25) {
             [self.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
         }
+        YTMUOfflineDiagnosticsLog(@"play-request", trackID, @"avplayer-play");
         [self.player playImmediatelyAtRate:self.playbackRate];
         self.playing = YES;
         [YTMUPlaybackCoordinator.sharedCoordinator offlinePlaybackDidStart];
+        YTMUOfflineDiagnosticsLog(@"play-request", trackID, @"started");
         [self postChange];
     }, &startException);
 
     if (!startCompletedSafely) {
+        YTMUOfflineDiagnosticsLogException(@"play-request", trackID, startException);
         YTMULogContainedException(startException, @"offline playback startup");
         YTMUPerformObjectiveCBlockSafely(^{
             [self endOfflineSessionWithReason:YTMUOfflineSessionEndReasonFatalError];
@@ -270,6 +277,12 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
         return;
     }
 
+    YTMUOfflineTrack *selectedTrack = index >= 0 && index < (NSInteger)tracks.count
+        ? tracks[(NSUInteger)index] : tracks.firstObject;
+    BOOL selectedFileExists = selectedTrack != nil
+        && [[NSFileManager defaultManager] fileExistsAtPath:[self audioURLForTrack:selectedTrack].path];
+    YTMUOfflineDiagnosticsLogTrack(@"track-selected", selectedTrack.trackID, selectedFileExists);
+
     NSMutableArray<YTMUOfflineTrack *> *availableTracks = [NSMutableArray array];
     for (YTMUOfflineTrack *track in tracks) {
         NSURL *url = [self audioURLForTrack:track];
@@ -283,8 +296,16 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
         return;
     }
 
-    if (index < 0 || index >= (NSInteger)availableTracks.count) {
-        index = 0;
+    NSUInteger availableSelectedIndex = selectedTrack == nil ? NSNotFound
+        : [availableTracks indexOfObjectPassingTest:^BOOL(YTMUOfflineTrack *track,
+                                                          __unused NSUInteger candidateIndex,
+                                                          __unused BOOL *stop) {
+            return [track.trackID isEqualToString:selectedTrack.trackID];
+        }];
+    if (availableSelectedIndex != NSNotFound) {
+        index = (NSInteger)availableSelectedIndex;
+    } else {
+        index = MAX(0, MIN(index, (NSInteger)availableTracks.count - 1));
     }
     NSUInteger generation = ++self.playbackRequestGeneration;
     NSArray<YTMUOfflineTrack *> *requestedTracks = availableTracks.copy;
@@ -292,9 +313,11 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
     [self requestOfflinePlaybackWithCompletionSafely:^(BOOL granted, NSError *error) {
         if (generation != self.playbackRequestGeneration) return;
         if (!granted) {
+            YTMUOfflineDiagnosticsLog(@"ownership-offline", selectedTrack.trackID, @"rejected");
             [self postErrorMessage:@"Offline playback could not start." error:error];
             return;
         }
+        YTMUOfflineDiagnosticsLog(@"ownership-offline", selectedTrack.trackID, @"granted");
         self.originalQueue = requestedTracks;
         self.queue = requestedTracks;
         self.currentIndex = requestedIndex;
@@ -491,6 +514,7 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
     }, &loadException);
     if (loadedSafely) return;
 
+    YTMUOfflineDiagnosticsLogException(@"track-load", self.currentTrack.trackID, loadException);
     YTMULogContainedException(loadException, @"offline track loading");
     YTMUPerformObjectiveCBlockSafely(^{
         [self endOfflineSessionWithReason:YTMUOfflineSessionEndReasonFatalError];
@@ -508,19 +532,24 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
         return;
     }
     NSURL *audioURL = [self audioURLForTrack:track];
-    if (![[NSFileManager defaultManager] fileExistsAtPath:audioURL.path]) {
+    BOOL fileExists = [[NSFileManager defaultManager] fileExistsAtPath:audioURL.path];
+    YTMUOfflineDiagnosticsLogTrack(@"track-load", track.trackID, fileExists);
+    if (!fileExists) {
         [self postErrorMessage:[NSString stringWithFormat:@"%@ is missing and was skipped.", track.title] error:nil];
         [self skipUnavailableCurrentTrack];
         return;
     }
 
+    YTMUOfflineDiagnosticsLog(@"player-item", track.trackID, @"asset-create");
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:audioURL options:nil];
     if (!asset.playable) {
+        YTMUOfflineDiagnosticsLog(@"player-item", track.trackID, @"asset-not-playable");
         [self postErrorMessage:[NSString stringWithFormat:@"%@ could not be played and was skipped.", track.title] error:nil];
         [self skipUnavailableCurrentTrack];
         return;
     }
     AVPlayerItem *item = [AVPlayerItem playerItemWithAsset:asset];
+    YTMUOfflineDiagnosticsLog(@"player-item", track.trackID, @"created");
 
     AVMutableMetadataItem *titleItem = [AVMutableMetadataItem metadataItem];
     titleItem.key = AVMetadataCommonKeyTitle;
@@ -545,6 +574,7 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
     item.externalMetadata = metadata;
 
     [self.player replaceCurrentItemWithPlayerItem:item];
+    YTMUOfflineDiagnosticsLog(@"player-item", track.trackID, @"installed");
     self.loadedAudioURL = audioURL;
     if (time > 0) {
         [self.player seekToTime:CMTimeMakeWithSeconds(time, NSEC_PER_SEC)
@@ -583,6 +613,8 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
             || self.queue.count > 0;
         if (!hadRuntimeState) return;
 
+        YTMUOfflineDiagnosticsLog(@"offline-session-end", self.currentTrack.trackID,
+                                  [NSString stringWithFormat:@"reason=%ld", (long)reason]);
         self.playbackRequestGeneration++;
         [self.player pause];
         [self.player replaceCurrentItemWithPlayerItem:nil];
@@ -718,6 +750,12 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
     }
 }
 
+- (BOOL)offlineRemoteCommandsCanControlPlayback {
+    return self.offlineSessionActive
+        && self.currentTrack != nil
+        && YTMUPlaybackCoordinator.sharedCoordinator.offlineControlsShouldBeActive;
+}
+
 - (BOOL)tryActivateIsolatedMediaControls {
     if (@available(iOS 16.0, *)) {
         Class sessionClass = NSClassFromString(@"MPNowPlayingSession");
@@ -776,39 +814,41 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
     MPRemoteCommandCenter *commands = self.offlineRemoteCommandCenter;
     __weak typeof(self) weakSelf = self;
     [self addRemoteTargetToCommand:commands.playCommand handler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
-        if (!weakSelf.offlineSessionActive || weakSelf.currentTrack == nil) return MPRemoteCommandHandlerStatusCommandFailed;
+        if (![weakSelf offlineRemoteCommandsCanControlPlayback]) return MPRemoteCommandHandlerStatusCommandFailed;
         [weakSelf play];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
     [self addRemoteTargetToCommand:commands.pauseCommand handler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
-        if (!weakSelf.offlineSessionActive || weakSelf.currentTrack == nil) return MPRemoteCommandHandlerStatusCommandFailed;
+        if (![weakSelf offlineRemoteCommandsCanControlPlayback]) return MPRemoteCommandHandlerStatusCommandFailed;
         [weakSelf pause];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
     [self addRemoteTargetToCommand:commands.togglePlayPauseCommand handler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
-        if (!weakSelf.offlineSessionActive || weakSelf.currentTrack == nil) return MPRemoteCommandHandlerStatusCommandFailed;
+        if (![weakSelf offlineRemoteCommandsCanControlPlayback]) return MPRemoteCommandHandlerStatusCommandFailed;
         [weakSelf togglePlayback];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
     [self addRemoteTargetToCommand:commands.nextTrackCommand handler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
-        if (!weakSelf.offlineSessionActive || weakSelf.currentTrack == nil) return MPRemoteCommandHandlerStatusCommandFailed;
+        if (![weakSelf offlineRemoteCommandsCanControlPlayback]) return MPRemoteCommandHandlerStatusCommandFailed;
         [weakSelf next];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
     [self addRemoteTargetToCommand:commands.previousTrackCommand handler:^MPRemoteCommandHandlerStatus(__unused MPRemoteCommandEvent *event) {
-        if (!weakSelf.offlineSessionActive || weakSelf.currentTrack == nil) return MPRemoteCommandHandlerStatusCommandFailed;
+        if (![weakSelf offlineRemoteCommandsCanControlPlayback]) return MPRemoteCommandHandlerStatusCommandFailed;
         [weakSelf previous];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
     [self addRemoteTargetToCommand:commands.changePlaybackPositionCommand handler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
-        if (!weakSelf.offlineSessionActive || ![event isKindOfClass:MPChangePlaybackPositionCommandEvent.class]) {
+        if (![weakSelf offlineRemoteCommandsCanControlPlayback]
+            || ![event isKindOfClass:MPChangePlaybackPositionCommandEvent.class]) {
             return MPRemoteCommandHandlerStatusCommandFailed;
         }
         [weakSelf seekToTime:((MPChangePlaybackPositionCommandEvent *)event).positionTime];
         return MPRemoteCommandHandlerStatusSuccess;
     }];
     [self addRemoteTargetToCommand:commands.changeShuffleModeCommand handler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
-        if (!weakSelf.offlineSessionActive || ![event isKindOfClass:MPChangeShuffleModeCommandEvent.class]) {
+        if (![weakSelf offlineRemoteCommandsCanControlPlayback]
+            || ![event isKindOfClass:MPChangeShuffleModeCommandEvent.class]) {
             return MPRemoteCommandHandlerStatusCommandFailed;
         }
         MPShuffleType requested = ((MPChangeShuffleModeCommandEvent *)event).shuffleType;
@@ -817,7 +857,8 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
         return MPRemoteCommandHandlerStatusSuccess;
     }];
     [self addRemoteTargetToCommand:commands.changeRepeatModeCommand handler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
-        if (!weakSelf.offlineSessionActive || ![event isKindOfClass:MPChangeRepeatModeCommandEvent.class]) {
+        if (![weakSelf offlineRemoteCommandsCanControlPlayback]
+            || ![event isKindOfClass:MPChangeRepeatModeCommandEvent.class]) {
             return MPRemoteCommandHandlerStatusCommandFailed;
         }
         MPRepeatType requested = ((MPChangeRepeatModeCommandEvent *)event).repeatType;
@@ -899,7 +940,8 @@ static void YTMULogContainedException(NSException *exception, NSString *operatio
 }
 
 - (void)updateNowPlayingInfo {
-    if (!self.offlineSessionActive || self.currentTrack == nil) {
+    if (!self.offlineSessionActive || self.currentTrack == nil
+        || !YTMUPlaybackCoordinator.sharedCoordinator.offlineControlsShouldBeActive) {
         return;
     }
     YTMUOfflineTrack *track = self.currentTrack;

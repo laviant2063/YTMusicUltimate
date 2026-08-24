@@ -19,6 +19,7 @@ FOUNDATION_EXPORT NSNotificationName const YTMUPlaybackOwnershipDidChangeNotific
 - (BOOL)requestNativePauseForOfflinePlayback:(NSError **)error;
 - (void)setNativeMiniPlayerSuppressed:(BOOL)suppressed;
 - (void)showOfflineEndedForNativeToast;
+- (void)showNativeTransitionFailureWithMessage:(NSString *)message;
 @end
 
 @protocol YTMUOfflineSessionControlling <NSObject>
@@ -45,6 +46,7 @@ typedef void (^YTMUPlaybackOwnershipCompletion)(BOOL granted, NSError * _Nullabl
 - (void)offlineSessionDidEndWithReason:(YTMUOfflineSessionEndReason)reason;
 - (void)endOfflineSessionWithReason:(YTMUOfflineSessionEndReason)reason;
 
+- (BOOL)prepareForNativePlayback;
 - (void)nativePlaybackWillStart;
 - (void)nativePlaybackDidStart;
 - (void)nativePlaybackDidPause;
@@ -53,4 +55,3 @@ typedef void (^YTMUPlaybackOwnershipCompletion)(BOOL granted, NSError * _Nullabl
 @end
 
 NS_ASSUME_NONNULL_END
-
