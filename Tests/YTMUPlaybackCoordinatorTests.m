@@ -238,6 +238,17 @@ static void testNativePauseRetainsNativeOwnership(void) {
     ASSERT_TRUE(!coordinator.nativeAudioPlaying);
 }
 
+static void testNativeSessionEndIsIdempotent(void) {
+    YTMUPlaybackCoordinator *coordinator = MakeCoordinator(NULL, NULL);
+    [coordinator nativePlaybackDidStart];
+
+    [coordinator nativePlaybackSessionDidEnd];
+    [coordinator nativePlaybackSessionDidEnd];
+
+    ASSERT_EQUAL_INTEGER(YTMUPlaybackOwnerNone, coordinator.owner);
+    ASSERT_TRUE(!coordinator.nativeAudioPlaying);
+}
+
 static void testUnexpectedNativeStartStillEndsOffline(void) {
     YTMUTestNativeAdapter *native = nil;
     YTMUTestOfflineController *offline = nil;
@@ -262,6 +273,7 @@ int main(void) {
         testOfflineToNativeEndsOfflineBeforeNativeStarts();
         testOfflineEndIsIdempotent();
         testNativePauseRetainsNativeOwnership();
+        testNativeSessionEndIsIdempotent();
         testUnexpectedNativeStartStillEndsOffline();
 
         if (failures != 0) {

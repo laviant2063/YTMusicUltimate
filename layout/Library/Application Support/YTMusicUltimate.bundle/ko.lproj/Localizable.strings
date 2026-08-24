@@ -153,3 +153,5 @@
 "OFFLINE_TIMER_60" = "60분";
 "OFFLINE_END_PLAYBACK" = "오프라인 재생 종료";
 "OFFLINE_END_PRESERVES_DATA" = "다운로드와 플레이리스트는 삭제되지 않습니다.";
+"OFFLINE_END_FAILED" = "오프라인 재생을 종료하지 못했습니다.";
+"OFFLINE_PLAYBACK_ENDED" = "오프라인 재생이 종료되었습니다.";

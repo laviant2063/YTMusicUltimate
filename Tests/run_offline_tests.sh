@@ -28,6 +28,17 @@ xcrun clang \
 "$build_root/offline-player-visual-policy-tests"
 
 xcrun clang \
+  -std=c11 \
+  -Wall -Wextra -Werror \
+  -x c \
+  "$repo_root/Source/Offline/YTMUMiniPlayerSwipePolicy.m" \
+  "$repo_root/Tests/YTMUMiniPlayerSwipePolicyTests.c" \
+  -I"$repo_root/Source/Offline" \
+  -o "$build_root/mini-player-swipe-policy-tests"
+
+"$build_root/mini-player-swipe-policy-tests"
+
+xcrun clang \
   -fobjc-arc \
   -Wall -Wextra -Werror \
   -framework Foundation \

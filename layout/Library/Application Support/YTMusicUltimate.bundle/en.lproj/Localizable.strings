@@ -153,3 +153,5 @@
 "OFFLINE_TIMER_60" = "60 minutes";
 "OFFLINE_END_PLAYBACK" = "End Offline Playback";
 "OFFLINE_END_PRESERVES_DATA" = "Downloads and playlists will not be deleted.";
+"OFFLINE_END_FAILED" = "Offline playback could not be ended.";
+"OFFLINE_PLAYBACK_ENDED" = "Offline playback has ended.";

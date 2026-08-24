@@ -6,6 +6,8 @@ downloads="$repo_root/Source/Prefs/YTMDownloads.m"
 mini_player="$repo_root/Source/Offline/YTMUOfflineMiniPlayerView.m"
 now_playing="$repo_root/Source/Offline/YTMUOfflineNowPlayingViewController.m"
 player_menu="$repo_root/Source/Offline/YTMUOfflinePlayerMenu.m"
+other_settings="$repo_root/Source/OtherSettings.x"
+playback_hooks="$repo_root/Source/Offline/YTMUOfflinePlaybackHooks.x"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -16,14 +18,14 @@ assert_contains() {
   local file="$1"
   local text="$2"
   local message="$3"
-  grep -Fq "$text" "$file" || fail "$message"
+  grep -Fq -- "$text" "$file" || fail "$message"
 }
 
 assert_not_contains() {
   local file="$1"
   local text="$2"
   local message="$3"
-  if grep -Fq "$text" "$file"; then
+  if grep -Fq -- "$text" "$file"; then
     fail "$message"
   fi
 }
@@ -34,8 +36,8 @@ assert_before() {
   local second="$3"
   local message="$4"
   local first_line second_line
-  first_line="$(grep -nF "$first" "$file" | head -1 | cut -d: -f1 || true)"
-  second_line="$(grep -nF "$second" "$file" | head -1 | cut -d: -f1 || true)"
+  first_line="$(grep -nF -- "$first" "$file" | head -1 | cut -d: -f1 || true)"
+  second_line="$(grep -nF -- "$second" "$file" | head -1 | cut -d: -f1 || true)"
   if [[ -z "$first_line" || -z "$second_line" || "$first_line" -ge "$second_line" ]]; then
     fail "$message"
   fi
@@ -80,6 +82,40 @@ assert_contains "$mini_player" "[YTMUOfflinePlaybackManager.sharedManager toggle
   "existing mini-player play/pause command was replaced"
 assert_contains "$mini_player" "[YTMUOfflinePlaybackManager.sharedManager next]" \
   "existing mini-player next command was replaced"
+assert_contains "$mini_player" "UIPanGestureRecognizer" \
+  "offline mini-player swipe recognizer is missing"
+assert_contains "$mini_player" "YTMUMiniPlayerSwipeCanBegin" \
+  "offline mini-player eligibility is not delegated to the pure swipe policy"
+assert_contains "$mini_player" "YTMUMiniPlayerSwipeShouldCommit" \
+  "offline mini-player completion is not delegated to the pure swipe policy"
+assert_contains "$mini_player" "endOfflineSessionWithReason:YTMUOfflineSessionEndReasonUserStop" \
+  "offline swipe does not delegate complete teardown to the coordinator"
+assert_contains "$mini_player" "YTMUPerformObjectiveCBlockSafely" \
+  "offline swipe teardown is not contained at the host-app boundary"
+assert_contains "$mini_player" "cancelsTouchesInView = NO" \
+  "offline swipe can cancel existing mini-player controls"
+assert_contains "$mini_player" "UIAccessibilityCustomAction" \
+  "offline mini-player has no accessible session-ending alternative"
+assert_not_contains "$mini_player" "replaceCurrentItemWithPlayerItem" \
+  "offline mini-player directly manipulates AVPlayer teardown"
+assert_not_contains "$mini_player" "MPNowPlaying" \
+  "offline mini-player directly manipulates Now Playing state"
+
+# YouTube Music 9.14 owns its watch-view dismissal pan. Preserve that native
+# gesture and route its existing reset family into the idempotent coordinator
+# instead of stacking a second recognizer on the native mini player.
+assert_contains "$other_settings" "resetMiniplayerRestrictions" \
+  "native mini-player restrictions are no longer reset"
+assert_contains "$playback_hooks" "%hook YTMMiniPlayerViewController" \
+  "native mini-player registration hook is missing"
+assert_contains "$playback_hooks" "- (void)resetAndHide" \
+  "native reset-and-hide session-end hook is missing"
+assert_contains "$playback_hooks" "- (void)resetPlayer" \
+  "native reset-player session-end hook is missing"
+assert_contains "$playback_hooks" "[YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackSessionDidEnd]" \
+  "native dismissal no longer clears playback ownership"
+assert_not_contains "$playback_hooks" "UIPanGestureRecognizer" \
+  "a duplicate fallback pan was added despite the native 9.14 gesture"
 
 # Full-screen UI requirements: bounded asynchronous artwork palette, stale
 # result protection, accessible controls, repeat-one state and queue metadata.
