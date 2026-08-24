@@ -155,10 +155,8 @@
 }
 
 - (BOOL)requestNativePauseForOfflinePlayback:(NSError **)error {
-    if (error != NULL) {
-        *error = nil;
-    }
     __block BOOL accepted = NO;
+    __block NSError * __strong pauseRequestError = nil;
     [self performOnMainSynchronously:^{
         UIViewController *player = self.playerViewController;
         if (player == nil && self.watchViewController != nil) {
@@ -171,13 +169,11 @@
                     resolvedPlayer = sendObject(self.watchViewController, playerSelector);
                 }, &resolutionException);
                 if (!resolvedSafely) {
-                    if (error != NULL) {
-                        *error = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
-                                                     code:3
-                                                 userInfo:@{NSLocalizedDescriptionKey:
-                                                                resolutionException.reason
-                                                                    ?: @"YouTube Music playback controls could not be resolved."}];
-                    }
+                    pauseRequestError = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
+                                                            code:3
+                                                        userInfo:@{NSLocalizedDescriptionKey:
+                                                                       resolutionException.reason
+                                                                           ?: @"YouTube Music playback controls could not be resolved."}];
                     return;
                 }
                 if ([resolvedPlayer isKindOfClass:UIViewController.class]) {
@@ -197,12 +193,11 @@
             sendVoid(player, pauseSelector);
         }, &pauseException);
         if (!accepted) {
-            if (error != NULL) {
-                *error = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
-                                             code:2
-                                         userInfo:@{NSLocalizedDescriptionKey:
-                                                        pauseException.reason ?: @"YouTube Music playback could not be paused."}];
-            }
+            pauseRequestError = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
+                                                    code:2
+                                                userInfo:@{NSLocalizedDescriptionKey:
+                                                               pauseException.reason
+                                                                   ?: @"YouTube Music playback could not be paused."}];
             return;
         }
         if (![self watchControllerReportsPlayback]) {
@@ -210,11 +205,16 @@
         }
     }];
 
-    if (!accepted && error != NULL && *error == nil) {
-        *error = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
-                                     code:1
-                                 userInfo:@{NSLocalizedDescriptionKey:
-                                                @"YouTube Music playback controls were not available."}];
+    if (error != NULL) {
+        if (accepted) {
+            *error = nil;
+        } else {
+            *error = pauseRequestError
+                ?: [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
+                                        code:1
+                                    userInfo:@{NSLocalizedDescriptionKey:
+                                                   @"YouTube Music playback controls were not available."}];
+        }
     }
     return accepted;
 }
