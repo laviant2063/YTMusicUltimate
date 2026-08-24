@@ -53,4 +53,14 @@ grep -Fq 'fallBackToSharedMediaControls' "$manager"
 grep -Fq 'loadCurrentTrackAndPlayUnchecked' "$manager"
 grep -Fq 'YTMUPerformObjectiveCBlockSafely' "$adapter"
 grep -Fq 'if (self.miniPlayerSuppressed == suppressed) return;' "$adapter"
+grep -Fq 'requestNativeSessionEndFromMiniPlayerController:' "$adapter"
+grep -Fq 'NSClassFromString(@"YTMWatchViewController")' "$adapter"
+grep -Fq 'NSSelectorFromString(@"resetAndHide")' "$adapter"
+grep -Fq 'method_getTypeEncoding' "$adapter"
+grep -Fq '"v16@0:8"' "$adapter"
+grep -Fq 'void (*sendVoid)(id, SEL) = (void *)objc_msgSend;' "$adapter"
+if grep -Fq 'performSelector:' "$adapter"; then
+  echo "Private native teardown must use an ABI-typed objc_msgSend call" >&2
+  exit 1
+fi
 echo "Playback integration static tests passed"

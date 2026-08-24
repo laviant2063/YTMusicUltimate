@@ -155,3 +155,4 @@
 "OFFLINE_END_PRESERVES_DATA" = "Downloads and playlists will not be deleted.";
 "OFFLINE_END_FAILED" = "Offline playback could not be ended.";
 "OFFLINE_PLAYBACK_ENDED" = "Offline playback has ended.";
+"NATIVE_MINIPLAYER_END_FAILED" = "YouTube Music playback could not be ended.";

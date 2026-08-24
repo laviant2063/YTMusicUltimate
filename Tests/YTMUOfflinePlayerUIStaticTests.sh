@@ -8,6 +8,8 @@ now_playing="$repo_root/Source/Offline/YTMUOfflineNowPlayingViewController.m"
 player_menu="$repo_root/Source/Offline/YTMUOfflinePlayerMenu.m"
 other_settings="$repo_root/Source/OtherSettings.x"
 playback_hooks="$repo_root/Source/Offline/YTMUOfflinePlaybackHooks.x"
+native_adapter="$repo_root/Source/Offline/YTMUNativePlaybackAdapter.m"
+native_swipe="$repo_root/Source/Offline/YTMUNativeMiniPlayerSwipeController.m"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -101,21 +103,51 @@ assert_not_contains "$mini_player" "replaceCurrentItemWithPlayerItem" \
 assert_not_contains "$mini_player" "MPNowPlaying" \
   "offline mini-player directly manipulates Now Playing state"
 
-# YouTube Music 9.14 owns its watch-view dismissal pan. Preserve that native
-# gesture and route its existing reset family into the idempotent coordinator
-# instead of stacking a second recognizer on the native mini player.
+# YouTube Music 9.14's mini-player controller owns horizontal queue swipes, but
+# its downward layout pan belongs to the ancestor watch page and is not a
+# reliable mini-player dismissal surface. Install one guarded recognizer on the
+# confirmed miniPlayerView and keep teardown inside the native adapter.
 assert_contains "$other_settings" "resetMiniplayerRestrictions" \
   "native mini-player restrictions are no longer reset"
 assert_contains "$playback_hooks" "%hook YTMMiniPlayerViewController" \
   "native mini-player registration hook is missing"
+assert_contains "$playback_hooks" "YTMUInstallNativeMiniPlayerSwipeIfNeeded(self)" \
+  "native mini-player hook does not install the guarded fallback"
 assert_contains "$playback_hooks" "- (void)resetAndHide" \
   "native reset-and-hide session-end hook is missing"
 assert_contains "$playback_hooks" "- (void)resetPlayer" \
   "native reset-player session-end hook is missing"
 assert_contains "$playback_hooks" "[YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackSessionDidEnd]" \
   "native dismissal no longer clears playback ownership"
-assert_not_contains "$playback_hooks" "UIPanGestureRecognizer" \
-  "a duplicate fallback pan was added despite the native 9.14 gesture"
+[[ -f "$native_swipe" ]] || fail "native mini-player swipe controller is missing"
+assert_contains "$native_swipe" "objc_getAssociatedObject" \
+  "native fallback recognizer installation is not idempotent"
+assert_contains "$native_swipe" "NSSelectorFromString(@\"miniPlayerView\")" \
+  "native fallback is not attached to the confirmed miniPlayerView"
+assert_contains "$native_swipe" "YTMUMiniPlayerSwipeCanBegin" \
+  "native fallback eligibility is not delegated to the pure swipe policy"
+assert_contains "$native_swipe" "YTMUMiniPlayerSwipeShouldCommit" \
+  "native fallback completion is not delegated to the pure swipe policy"
+assert_contains "$native_swipe" "YTMUPlaybackOwnerNative" \
+  "native fallback is not restricted to native ownership"
+assert_contains "$native_swipe" "cancelsTouchesInView = NO" \
+  "native fallback can cancel existing mini-player controls"
+assert_contains "$native_swipe" "requestNativeSessionEndFromMiniPlayerController" \
+  "native fallback bypasses the adapter termination boundary"
+assert_contains "$native_swipe" "UIApplicationDidEnterBackgroundNotification" \
+  "native fallback does not cancel safely when the app backgrounds"
+assert_contains "$native_swipe" "YTMUPlaybackOwnershipDidChangeNotification" \
+  "native fallback does not cancel when playback ownership changes"
+assert_not_contains "$native_swipe" "resetAndHide" \
+  "native fallback calls a private teardown selector directly"
+assert_not_contains "$native_swipe" "AVPlayer" \
+  "native fallback manipulates playback directly"
+assert_not_contains "$native_swipe" "setHidden:" \
+  "native fallback hides UI independently of native session teardown"
+assert_contains "$native_adapter" "NSSelectorFromString(@\"resetAndHide\")" \
+  "native adapter does not use the verified no-argument teardown selector"
+assert_contains "$native_adapter" "YTMUPerformObjectiveCBlockSafely" \
+  "native teardown selector is not exception-contained"
 
 # Full-screen UI requirements: bounded asynchronous artwork palette, stale
 # result protection, accessible controls, repeat-one state and queue metadata.
@@ -167,11 +199,13 @@ assert_before "$player_menu" "@\"AirPlay\"" "CURRENT_QUEUE" \
 assert_before "$player_menu" "CURRENT_QUEUE" "OFFLINE_END_PLAYBACK" \
   "current queue must precede offline stop"
 
-# These exact v2 blobs are the user-validated playback and persistence core.
+# Pin the validated playback and persistence core. The adapter and hook hashes
+# include only the audited native mini-player installation/teardown additions.
 assert_unchanged_blob "Source/Offline/YTMUOfflinePlaybackManager.m" "cda6af9a764448e9d5746a1584885fa125c4e7a4"
 assert_unchanged_blob "Source/Offline/YTMUPlaybackCoordinator.m" "942f7c775831cf9bbdee7216943bf78186000603"
-assert_unchanged_blob "Source/Offline/YTMUNativePlaybackAdapter.m" "e82dbd8bdef23688b415774fc6a1c8b8221241c6"
-assert_unchanged_blob "Source/Offline/YTMUOfflinePlaybackHooks.x" "48078fa962de652c9dad3c8442d25eb8718219d4"
+assert_unchanged_blob "Source/Offline/YTMUNativePlaybackAdapter.h" "1d10947b97020429ea195d16ed01dfad4e21286e"
+assert_unchanged_blob "Source/Offline/YTMUNativePlaybackAdapter.m" "695bc40d2a25037b3ce48bc28a2383dfc8fd85c0"
+assert_unchanged_blob "Source/Offline/YTMUOfflinePlaybackHooks.x" "63b8d3925216b88218de27474e22f3c581134f97"
 assert_unchanged_blob "Source/Offline/YTMUOfflinePlaybackPolicy.m" "a7f6ceb610a3104810321f8cfe86da449cd3dda4"
 assert_unchanged_blob "Source/Offline/YTMUPlaybackCoordinatorPolicy.m" "8644aca7bbbcb04c87563dd2a5ff369d5d6d4a33"
 assert_unchanged_blob "Source/Offline/YTMUOfflineModels.h" "98871b06ace3b25b16c3301c5476fe6db2705162"

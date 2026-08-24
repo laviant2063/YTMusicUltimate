@@ -9,6 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (class, nonatomic, readonly) YTMUNativePlaybackAdapter *sharedAdapter;
 @property (nonatomic, assign, readonly, getter=isNativePlaybackAudible) BOOL nativePlaybackAudible;
+@property (nonatomic, assign, readonly, getter=isNativeMiniPlayerSuppressed) BOOL nativeMiniPlayerSuppressed;
 
 - (void)registerPlayerViewController:(UIViewController *)controller;
 - (void)registerWatchViewController:(UIViewController *)controller;
@@ -17,6 +18,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)nativePlaybackDidPause;
 - (void)nativePlaybackSessionDidEnd;
 - (void)refreshNativePlaybackState;
+- (BOOL)requestNativeSessionEndFromMiniPlayerController:(UIViewController *)controller
+                                                  error:(NSError * _Nullable __autoreleasing * _Nullable)error;
 
 @end
 

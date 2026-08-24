@@ -3,6 +3,9 @@
 #import "YTMUObjectiveCExceptionGuard.h"
 
 #import <objc/message.h>
+#import <objc/runtime.h>
+
+#include <string.h>
 
 @interface YTMUNativeMiniPlayerSnapshot : NSObject
 @property (nonatomic, assign) BOOL hidden;
@@ -137,6 +140,12 @@
     }];
 }
 
+- (BOOL)isNativeMiniPlayerSuppressed {
+    __block BOOL suppressed = NO;
+    [self performOnMainSynchronously:^{ suppressed = self.miniPlayerSuppressed; }];
+    return suppressed;
+}
+
 - (BOOL)watchControllerReportsPlayback {
     UIViewController *watch = self.watchViewController;
     SEL selector = NSSelectorFromString(@"isPlaybackVideoPlaying");
@@ -220,6 +229,101 @@
         }
     }
     return accepted;
+}
+
+- (BOOL)requestNativeSessionEndFromMiniPlayerController:(UIViewController *)controller
+                                                  error:(NSError **)error {
+    __block BOOL ended = NO;
+    __block NSError * __strong requestError = nil;
+    [self performOnMainSynchronously:^{
+        YTMUPlaybackCoordinator *coordinator = YTMUPlaybackCoordinator.sharedCoordinator;
+        if (coordinator.owner != YTMUPlaybackOwnerNative || self.miniPlayerSuppressed) {
+            requestError = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
+                                               code:4
+                                           userInfo:@{NSLocalizedDescriptionKey:
+                                                          @"YouTube Music does not own playback right now."}];
+            return;
+        }
+
+        UIViewController *watch = self.watchViewController;
+        if (watch == nil && controller != nil) {
+            SEL parentSelector = NSSelectorFromString(@"parentResponder");
+            if ([controller respondsToSelector:parentSelector]) {
+                __block id parentResponder = nil;
+                NSException *resolutionException = nil;
+                BOOL resolvedSafely = YTMUPerformObjectiveCBlockSafely(^{
+                    id (*sendObject)(id, SEL) = (void *)objc_msgSend;
+                    parentResponder = sendObject(controller, parentSelector);
+                }, &resolutionException);
+                if (!resolvedSafely) {
+                    requestError = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
+                                                       code:5
+                                                   userInfo:@{NSLocalizedDescriptionKey:
+                                                                  resolutionException.reason
+                                                                      ?: @"The YouTube Music player could not be resolved."}];
+                    return;
+                }
+                Class watchClass = NSClassFromString(@"YTMWatchViewController");
+                if (watchClass != Nil && [parentResponder isKindOfClass:watchClass]) {
+                    watch = parentResponder;
+                    self.watchViewController = watch;
+                }
+            }
+        }
+
+        SEL resetAndHideSelector = NSSelectorFromString(@"resetAndHide");
+        if (watch == nil || ![watch respondsToSelector:resetAndHideSelector]) {
+            requestError = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
+                                               code:6
+                                           userInfo:@{NSLocalizedDescriptionKey:
+                                                          @"YouTube Music playback could not be closed safely."}];
+            return;
+        }
+
+        Method resetAndHideMethod = class_getInstanceMethod(watch.class, resetAndHideSelector);
+        const char *typeEncoding = resetAndHideMethod == NULL
+            ? NULL
+            : method_getTypeEncoding(resetAndHideMethod);
+        if (typeEncoding == NULL || strcmp(typeEncoding, "v16@0:8") != 0) {
+            requestError = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
+                                               code:9
+                                           userInfo:@{NSLocalizedDescriptionKey:
+                                                          @"This YouTube Music version has an incompatible close command."}];
+            return;
+        }
+
+        NSException *resetException = nil;
+        BOOL invokedSafely = YTMUPerformObjectiveCBlockSafely(^{
+            void (*sendVoid)(id, SEL) = (void *)objc_msgSend;
+            sendVoid(watch, resetAndHideSelector);
+        }, &resetException);
+        if (!invokedSafely) {
+            requestError = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
+                                               code:7
+                                           userInfo:@{NSLocalizedDescriptionKey:
+                                                          resetException.reason
+                                                              ?: @"YouTube Music rejected the close request."}];
+            return;
+        }
+
+        BOOL stillPlaying = [self watchControllerReportsPlayback];
+        if (!stillPlaying && coordinator.owner == YTMUPlaybackOwnerNative) {
+            self.nativePlaybackAudible = NO;
+            [coordinator nativePlaybackSessionDidEnd];
+        }
+        ended = !stillPlaying && coordinator.owner == YTMUPlaybackOwnerNone;
+        if (!ended) {
+            requestError = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
+                                               code:8
+                                           userInfo:@{NSLocalizedDescriptionKey:
+                                                          @"YouTube Music playback was not confirmed as stopped."}];
+        }
+    }];
+
+    if (error != NULL) {
+        *error = ended ? nil : requestError;
+    }
+    return ended;
 }
 
 - (void)nativePlaybackDidStart {

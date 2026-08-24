@@ -155,3 +155,4 @@
 "OFFLINE_END_PRESERVES_DATA" = "다운로드와 플레이리스트는 삭제되지 않습니다.";
 "OFFLINE_END_FAILED" = "오프라인 재생을 종료하지 못했습니다.";
 "OFFLINE_PLAYBACK_ENDED" = "오프라인 재생이 종료되었습니다.";
+"NATIVE_MINIPLAYER_END_FAILED" = "YouTube Music 재생을 종료하지 못했습니다.";

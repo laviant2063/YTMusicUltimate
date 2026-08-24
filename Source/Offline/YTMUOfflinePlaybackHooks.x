@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
+#import "YTMUNativeMiniPlayerSwipeController.h"
 #import "YTMUNativePlaybackAdapter.h"
 #import "YTMUPlaybackCoordinator.h"
 
@@ -154,11 +155,13 @@ static void YTMUPrepareForNativePlayback(UIViewController *controller) {
 - (void)viewDidLoad {
     %orig;
     [YTMUNativePlaybackAdapter.sharedAdapter registerMiniPlayerViewController:self];
+    YTMUInstallNativeMiniPlayerSwipeIfNeeded(self);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     %orig(animated);
     [YTMUNativePlaybackAdapter.sharedAdapter registerMiniPlayerViewController:self];
+    YTMUInstallNativeMiniPlayerSwipeIfNeeded(self);
 }
 
 %end
