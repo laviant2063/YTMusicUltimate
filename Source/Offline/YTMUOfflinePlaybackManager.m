@@ -1,5 +1,7 @@
 #import "YTMUOfflinePlaybackManager.h"
 
+#import "YTMUObjectiveCExceptionGuard.h"
+
 #import <AVKit/AVKit.h>
 #import <MediaPlayer/MediaPlayer.h>
 #import <UIKit/UIKit.h>
@@ -10,6 +12,19 @@
 NSNotificationName const YTMUOfflinePlaybackDidChangeNotification = @"YTMUOfflinePlaybackDidChangeNotification";
 NSNotificationName const YTMUOfflinePlaybackProgressNotification = @"YTMUOfflinePlaybackProgressNotification";
 NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePlaybackErrorNotification";
+
+static NSError *YTMUOfflineErrorFromException(NSException *exception, NSString *operation) {
+    NSString *reason = exception.reason.length > 0 ? exception.reason : exception.name;
+    NSString *description = [NSString stringWithFormat:@"%@ failed: %@", operation, reason ?: @"unknown error"];
+    return [NSError errorWithDomain:@"YTMUOfflinePlaybackRuntimeErrorDomain"
+                               code:1
+                           userInfo:@{NSLocalizedDescriptionKey: description}];
+}
+
+static void YTMULogContainedException(NSException *exception, NSString *operation) {
+    if (exception == nil) return;
+    NSLog(@"[YTMusicUltimate] Contained %@ exception %@: %@", operation, exception.name, exception.reason);
+}
 
 @interface YTMUOfflinePlaybackManager ()
 @property (nonatomic, strong, readwrite) AVPlayer *player;
@@ -31,6 +46,8 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
 @property (nonatomic, strong, nullable) MPNowPlayingInfoCenter *offlineNowPlayingInfoCenter;
 @property (nonatomic, strong, nullable) MPRemoteCommandCenter *offlineRemoteCommandCenter;
 @property (nonatomic, strong) NSMutableArray<NSDictionary<NSString *, id> *> *remoteCommandRegistrations;
+- (void)requestOfflinePlaybackWithCompletionSafely:(YTMUPlaybackOwnershipCompletion)completion;
+- (void)loadCurrentTrackAndPlayUnchecked:(BOOL)autoplay preservingTime:(NSTimeInterval)time;
 @end
 
 @implementation YTMUOfflinePlaybackManager
@@ -186,25 +203,61 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
     }
 }
 
+- (void)requestOfflinePlaybackWithCompletionSafely:(YTMUPlaybackOwnershipCompletion)completion {
+    NSException *ownershipException = nil;
+    BOOL requestStartedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        [YTMUPlaybackCoordinator.sharedCoordinator requestOfflinePlaybackWithCompletion:completion];
+    }, &ownershipException);
+    if (requestStartedSafely) return;
+
+    YTMULogContainedException(ownershipException, @"offline playback ownership transition");
+    YTMUPerformObjectiveCBlockSafely(^{
+        [YTMUPlaybackCoordinator.sharedCoordinator
+            offlineSessionDidEndWithReason:YTMUOfflineSessionEndReasonFatalError];
+    }, NULL);
+    YTMUPerformObjectiveCBlockSafely(^{
+        [self postErrorMessage:@"Offline playback controls could not be activated safely."
+                         error:YTMUOfflineErrorFromException(ownershipException, @"Playback ownership")];
+    }, NULL);
+}
+
 - (void)beginPlayingAfterOwnershipGranted {
     if (self.currentTrack == nil || self.player.currentItem == nil) {
         [self endOfflineSessionWithReason:YTMUOfflineSessionEndReasonFatalError];
         [self postErrorMessage:@"Choose a downloaded song first." error:nil];
         return;
     }
-    self.offlineSessionActive = YES;
-    [self activateOfflineMediaControls];
-    if (![self activateAudioSession]) {
-        [self endOfflineSessionWithReason:YTMUOfflineSessionEndReasonFatalError];
+
+    __block BOOL audioSessionActivated = NO;
+    NSException *startException = nil;
+    BOOL startCompletedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        self.offlineSessionActive = YES;
+        audioSessionActivated = [self activateAudioSession];
+        if (!audioSessionActivated) return;
+        [self activateOfflineMediaControls];
+        if (self.duration > 0 && self.currentTime >= self.duration - 0.25) {
+            [self.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+        }
+        [self.player playImmediatelyAtRate:self.playbackRate];
+        self.playing = YES;
+        [YTMUPlaybackCoordinator.sharedCoordinator offlinePlaybackDidStart];
+        [self postChange];
+    }, &startException);
+
+    if (!startCompletedSafely) {
+        YTMULogContainedException(startException, @"offline playback startup");
+        YTMUPerformObjectiveCBlockSafely(^{
+            [self endOfflineSessionWithReason:YTMUOfflineSessionEndReasonFatalError];
+        }, NULL);
+        YTMUPerformObjectiveCBlockSafely(^{
+            [self postErrorMessage:@"Offline playback could not start safely."
+                             error:YTMUOfflineErrorFromException(startException, @"Offline playback")];
+        }, NULL);
         return;
     }
-    if (self.duration > 0 && self.currentTime >= self.duration - 0.25) {
-        [self.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+    if (!audioSessionActivated) {
+        [self endOfflineSessionWithReason:YTMUOfflineSessionEndReasonFatalError];
     }
-    [self.player playImmediatelyAtRate:self.playbackRate];
-    self.playing = YES;
-    [YTMUPlaybackCoordinator.sharedCoordinator offlinePlaybackDidStart];
-    [self postChange];
 }
 
 - (void)playTracks:(NSArray<YTMUOfflineTrack *> *)tracks
@@ -236,7 +289,7 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
     NSUInteger generation = ++self.playbackRequestGeneration;
     NSArray<YTMUOfflineTrack *> *requestedTracks = availableTracks.copy;
     NSInteger requestedIndex = index;
-    [YTMUPlaybackCoordinator.sharedCoordinator requestOfflinePlaybackWithCompletion:^(BOOL granted, NSError *error) {
+    [self requestOfflinePlaybackWithCompletionSafely:^(BOOL granted, NSError *error) {
         if (generation != self.playbackRequestGeneration) return;
         if (!granted) {
             [self postErrorMessage:@"Offline playback could not start." error:error];
@@ -268,7 +321,7 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
         return;
     }
     NSUInteger generation = ++self.playbackRequestGeneration;
-    [YTMUPlaybackCoordinator.sharedCoordinator requestOfflinePlaybackWithCompletion:^(BOOL granted, NSError *error) {
+    [self requestOfflinePlaybackWithCompletionSafely:^(BOOL granted, NSError *error) {
         if (generation != self.playbackRequestGeneration) return;
         if (!granted) {
             [self postErrorMessage:@"Offline playback could not start." error:error];
@@ -432,6 +485,23 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
 }
 
 - (void)loadCurrentTrackAndPlay:(BOOL)autoplay preservingTime:(NSTimeInterval)time {
+    NSException *loadException = nil;
+    BOOL loadedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        [self loadCurrentTrackAndPlayUnchecked:autoplay preservingTime:time];
+    }, &loadException);
+    if (loadedSafely) return;
+
+    YTMULogContainedException(loadException, @"offline track loading");
+    YTMUPerformObjectiveCBlockSafely(^{
+        [self endOfflineSessionWithReason:YTMUOfflineSessionEndReasonFatalError];
+    }, NULL);
+    YTMUPerformObjectiveCBlockSafely(^{
+        [self postErrorMessage:@"This downloaded song could not be opened safely."
+                         error:YTMUOfflineErrorFromException(loadException, @"Downloaded song")];
+    }, NULL);
+}
+
+- (void)loadCurrentTrackAndPlayUnchecked:(BOOL)autoplay preservingTime:(NSTimeInterval)time {
     YTMUOfflineTrack *track = self.currentTrack;
     if (track == nil) {
         [self clearQueue];
@@ -634,27 +704,73 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
 - (void)addRemoteTargetToCommand:(MPRemoteCommand *)command
                          handler:(MPRemoteCommandHandlerStatus (^)(MPRemoteCommandEvent *event))handler {
     if (command == nil || handler == nil) return;
-    id token = [command addTargetWithHandler:handler];
+    __block id token = nil;
+    NSException *registrationException = nil;
+    BOOL registeredSafely = YTMUPerformObjectiveCBlockSafely(^{
+        token = [command addTargetWithHandler:handler];
+    }, &registrationException);
+    if (!registeredSafely) {
+        YTMULogContainedException(registrationException, @"remote command registration");
+        return;
+    }
     if (token != nil) {
         [self.remoteCommandRegistrations addObject:@{@"command": command, @"token": token}];
     }
 }
 
+- (BOOL)tryActivateIsolatedMediaControls {
+    if (@available(iOS 16.0, *)) {
+        Class sessionClass = NSClassFromString(@"MPNowPlayingSession");
+        SEL initializer = NSSelectorFromString(@"initWithPlayers:");
+        if (sessionClass == Nil || ![sessionClass instancesRespondToSelector:initializer]) {
+            return NO;
+        }
+
+        __block MPNowPlayingSession *createdSession = nil;
+        __block MPNowPlayingInfoCenter *createdInfoCenter = nil;
+        __block MPRemoteCommandCenter *createdCommandCenter = nil;
+        NSException *sessionException = nil;
+        BOOL createdSafely = YTMUPerformObjectiveCBlockSafely(^{
+            createdSession = [(MPNowPlayingSession *)[sessionClass alloc] initWithPlayers:@[self.player]];
+            createdSession.automaticallyPublishesNowPlayingInfo = NO;
+            createdInfoCenter = createdSession.nowPlayingInfoCenter;
+            createdCommandCenter = createdSession.remoteCommandCenter;
+        }, &sessionException);
+        if (!createdSafely || createdSession == nil || createdInfoCenter == nil || createdCommandCenter == nil) {
+            YTMULogContainedException(sessionException, @"isolated Now Playing session creation");
+            return NO;
+        }
+
+        self.nowPlayingSession = createdSession;
+        self.offlineNowPlayingInfoCenter = createdInfoCenter;
+        self.offlineRemoteCommandCenter = createdCommandCenter;
+
+        NSException *activationException = nil;
+        BOOL activatedSafely = YTMUPerformObjectiveCBlockSafely(^{
+            [createdSession becomeActiveIfPossibleWithCompletion:^(__unused BOOL success) {}];
+        }, &activationException);
+        if (!activatedSafely) {
+            YTMULogContainedException(activationException, @"isolated Now Playing session activation");
+            self.nowPlayingSession = nil;
+            self.offlineNowPlayingInfoCenter = nil;
+            self.offlineRemoteCommandCenter = nil;
+            return NO;
+        }
+        return YES;
+    }
+    return NO;
+}
+
+- (void)fallBackToSharedMediaControls {
+    self.offlineNowPlayingInfoCenter = MPNowPlayingInfoCenter.defaultCenter;
+    self.offlineRemoteCommandCenter = MPRemoteCommandCenter.sharedCommandCenter;
+}
+
 - (void)activateOfflineMediaControls {
     if (self.offlineRemoteCommandCenter != nil) return;
 
-    if (@available(iOS 16.0, *)) {
-        if (NSClassFromString(@"MPNowPlayingSession") != Nil) {
-            MPNowPlayingSession *session = [[MPNowPlayingSession alloc] initWithPlayers:@[self.player]];
-            self.nowPlayingSession = session;
-            self.offlineNowPlayingInfoCenter = session.nowPlayingInfoCenter;
-            self.offlineRemoteCommandCenter = session.remoteCommandCenter;
-            [session becomeActiveIfPossibleWithCompletion:^(__unused BOOL success) {}];
-        }
-    }
-    if (self.offlineRemoteCommandCenter == nil) {
-        self.offlineNowPlayingInfoCenter = MPNowPlayingInfoCenter.defaultCenter;
-        self.offlineRemoteCommandCenter = MPRemoteCommandCenter.sharedCommandCenter;
+    if (![self tryActivateIsolatedMediaControls]) {
+        [self fallBackToSharedMediaControls];
     }
 
     MPRemoteCommandCenter *commands = self.offlineRemoteCommandCenter;
@@ -714,19 +830,32 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
 }
 
 - (void)stopOfflineMediaControls {
-    self.offlineNowPlayingInfoCenter.nowPlayingInfo = nil;
+    NSException *nowPlayingException = nil;
+    YTMUPerformObjectiveCBlockSafely(^{
+        self.offlineNowPlayingInfoCenter.nowPlayingInfo = nil;
+    }, &nowPlayingException);
+    YTMULogContainedException(nowPlayingException, @"Now Playing cleanup");
+
     for (NSDictionary<NSString *, id> *registration in self.remoteCommandRegistrations.copy) {
         MPRemoteCommand *command = registration[@"command"];
         id token = registration[@"token"];
         if (command != nil && token != nil) {
-            [command removeTarget:token];
+            NSException *removalException = nil;
+            YTMUPerformObjectiveCBlockSafely(^{
+                [command removeTarget:token];
+            }, &removalException);
+            YTMULogContainedException(removalException, @"remote command cleanup");
         }
     }
     [self.remoteCommandRegistrations removeAllObjects];
     self.offlineRemoteCommandCenter = nil;
     self.offlineNowPlayingInfoCenter = nil;
     if (@available(iOS 16.0, *)) {
-        [self.nowPlayingSession removePlayer:self.player];
+        NSException *sessionException = nil;
+        YTMUPerformObjectiveCBlockSafely(^{
+            [self.nowPlayingSession removePlayer:self.player];
+        }, &sessionException);
+        YTMULogContainedException(sessionException, @"isolated Now Playing session cleanup");
         self.nowPlayingSession = nil;
     }
 }
@@ -795,7 +924,13 @@ NSNotificationName const YTMUOfflinePlaybackErrorNotification = @"YTMUOfflinePla
             return artwork;
         }];
     }
-    self.offlineNowPlayingInfoCenter.nowPlayingInfo = info;
+    NSException *nowPlayingException = nil;
+    BOOL publishedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        self.offlineNowPlayingInfoCenter.nowPlayingInfo = info;
+    }, &nowPlayingException);
+    if (!publishedSafely) {
+        YTMULogContainedException(nowPlayingException, @"Now Playing publication");
+    }
 }
 
 @end

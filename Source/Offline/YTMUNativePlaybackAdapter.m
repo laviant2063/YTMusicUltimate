@@ -1,5 +1,7 @@
 #import "YTMUNativePlaybackAdapter.h"
 
+#import "YTMUObjectiveCExceptionGuard.h"
+
 #import <objc/message.h>
 
 @interface YTMUNativeMiniPlayerSnapshot : NSObject
@@ -66,16 +68,18 @@
         self.watchViewController = controller;
         SEL playerSelector = NSSelectorFromString(@"playerViewController");
         if ([controller respondsToSelector:playerSelector]) {
-            id (*sendObject)(id, SEL) = (void *)objc_msgSend;
-            UIViewController *player = sendObject(controller, playerSelector);
-            if ([player isKindOfClass:UIViewController.class]) {
-                self.playerViewController = player;
-            }
+            YTMUPerformObjectiveCBlockSafely(^{
+                id (*sendObject)(id, SEL) = (void *)objc_msgSend;
+                UIViewController *player = sendObject(controller, playerSelector);
+                if ([player isKindOfClass:UIViewController.class]) {
+                    self.playerViewController = player;
+                }
+            }, NULL);
         }
     }];
 }
 
-- (void)applyMiniPlayerSuppressionToController:(UIViewController *)controller {
+- (void)applyMiniPlayerSuppressionToControllerWithoutThrowing:(UIViewController *)controller {
     if (controller == nil || !controller.isViewLoaded) return;
     UIView *view = controller.view;
     if (self.miniPlayerSuppressed) {
@@ -98,6 +102,18 @@
         view.alpha = snapshot.alpha;
         view.userInteractionEnabled = snapshot.userInteractionEnabled;
         [self.miniPlayerSnapshots removeObjectForKey:controller];
+    }
+}
+
+- (void)applyMiniPlayerSuppressionToController:(UIViewController *)controller {
+    NSException *suppressionException = nil;
+    BOOL appliedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        [self applyMiniPlayerSuppressionToControllerWithoutThrowing:controller];
+    }, &suppressionException);
+    if (!appliedSafely) {
+        NSLog(@"[YTMusicUltimate] Contained native mini player exception %@: %@",
+              suppressionException.name,
+              suppressionException.reason);
     }
 }
 
@@ -124,20 +140,50 @@
     if (watch == nil || ![watch respondsToSelector:selector]) {
         return self.nativePlaybackAudible;
     }
-    BOOL (*sendBool)(id, SEL) = (void *)objc_msgSend;
-    return sendBool(watch, selector);
+    __block BOOL isPlaying = self.nativePlaybackAudible;
+    NSException *stateException = nil;
+    BOOL readSafely = YTMUPerformObjectiveCBlockSafely(^{
+        BOOL (*sendBool)(id, SEL) = (void *)objc_msgSend;
+        isPlaying = sendBool(watch, selector);
+    }, &stateException);
+    if (!readSafely) {
+        NSLog(@"[YTMusicUltimate] Could not read native playback state %@: %@",
+              stateException.name,
+              stateException.reason);
+    }
+    return isPlaying;
 }
 
 - (BOOL)requestNativePauseForOfflinePlayback:(NSError **)error {
+    if (error != NULL) {
+        *error = nil;
+    }
     __block BOOL accepted = NO;
     [self performOnMainSynchronously:^{
         UIViewController *player = self.playerViewController;
         if (player == nil && self.watchViewController != nil) {
             SEL playerSelector = NSSelectorFromString(@"playerViewController");
             if ([self.watchViewController respondsToSelector:playerSelector]) {
-                id (*sendObject)(id, SEL) = (void *)objc_msgSend;
-                player = sendObject(self.watchViewController, playerSelector);
-                self.playerViewController = player;
+                __block id resolvedPlayer = nil;
+                NSException *resolutionException = nil;
+                BOOL resolvedSafely = YTMUPerformObjectiveCBlockSafely(^{
+                    id (*sendObject)(id, SEL) = (void *)objc_msgSend;
+                    resolvedPlayer = sendObject(self.watchViewController, playerSelector);
+                }, &resolutionException);
+                if (!resolvedSafely) {
+                    if (error != NULL) {
+                        *error = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
+                                                     code:3
+                                                 userInfo:@{NSLocalizedDescriptionKey:
+                                                                resolutionException.reason
+                                                                    ?: @"YouTube Music playback controls could not be resolved."}];
+                    }
+                    return;
+                }
+                if ([resolvedPlayer isKindOfClass:UIViewController.class]) {
+                    player = resolvedPlayer;
+                    self.playerViewController = player;
+                }
             }
         }
         SEL pauseSelector = NSSelectorFromString(@"pause");
@@ -145,15 +191,26 @@
             accepted = !self.nativePlaybackAudible;
             return;
         }
-        void (*sendVoid)(id, SEL) = (void *)objc_msgSend;
-        sendVoid(player, pauseSelector);
-        accepted = YES;
+        NSException *pauseException = nil;
+        accepted = YTMUPerformObjectiveCBlockSafely(^{
+            void (*sendVoid)(id, SEL) = (void *)objc_msgSend;
+            sendVoid(player, pauseSelector);
+        }, &pauseException);
+        if (!accepted) {
+            if (error != NULL) {
+                *error = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
+                                             code:2
+                                         userInfo:@{NSLocalizedDescriptionKey:
+                                                        pauseException.reason ?: @"YouTube Music playback could not be paused."}];
+            }
+            return;
+        }
         if (![self watchControllerReportsPlayback]) {
             self.nativePlaybackAudible = NO;
         }
     }];
 
-    if (!accepted && error != NULL) {
+    if (!accepted && error != NULL && *error == nil) {
         *error = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
                                      code:1
                                  userInfo:@{NSLocalizedDescriptionKey:
@@ -189,13 +246,15 @@
 
 - (void)showOfflineEndedForNativeToast {
     [self performOnMainSynchronously:^{
-        Class toastClass = NSClassFromString(@"YTMToastController");
-        SEL selector = NSSelectorFromString(@"showMessage:");
-        id toast = toastClass == Nil ? nil : [[toastClass alloc] init];
-        if (toast != nil && [toast respondsToSelector:selector]) {
-            void (*sendMessage)(id, SEL, id) = (void *)objc_msgSend;
-            sendMessage(toast, selector, @"오프라인 재생 종료됨 · YouTube Music으로 전환");
-        }
+        YTMUPerformObjectiveCBlockSafely(^{
+            Class toastClass = NSClassFromString(@"YTMToastController");
+            SEL selector = NSSelectorFromString(@"showMessage:");
+            id toast = toastClass == Nil ? nil : [[toastClass alloc] init];
+            if (toast != nil && [toast respondsToSelector:selector]) {
+                void (*sendMessage)(id, SEL, id) = (void *)objc_msgSend;
+                sendMessage(toast, selector, @"오프라인 재생 종료됨 · YouTube Music으로 전환");
+            }
+        }, NULL);
     }];
 }
 
