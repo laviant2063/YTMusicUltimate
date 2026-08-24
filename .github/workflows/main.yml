@@ -99,6 +99,11 @@ jobs:
       - name: Download YouTube Music
         run: wget "${{ inputs.ipa_url }}" --no-verbose -O ytm.ipa
 
+      - name: Run offline playback tests
+        run: |
+          cd main
+          bash Tests/run_offline_tests.sh
+
       - name: Build Tweak for Sideloading
         run: |
           cd main
