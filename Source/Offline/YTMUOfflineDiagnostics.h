@@ -3,13 +3,13 @@
 NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT void YTMUOfflineDiagnosticsLog(NSString *stage,
-                                                  nullable NSString *trackID,
+                                                  NSString * _Nullable trackID,
                                                   NSString *detail);
 FOUNDATION_EXPORT void YTMUOfflineDiagnosticsLogTrack(NSString *stage,
-                                                       nullable NSString *trackID,
+                                                       NSString * _Nullable trackID,
                                                        BOOL fileExists);
 FOUNDATION_EXPORT void YTMUOfflineDiagnosticsLogException(NSString *stage,
-                                                           nullable NSString *trackID,
-                                                           nullable NSException *exception);
+                                                           NSString * _Nullable trackID,
+                                                           NSException * _Nullable exception);
 
 NS_ASSUME_NONNULL_END
