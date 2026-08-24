@@ -2,8 +2,11 @@
 
 #import "YTMUOfflineNowPlayingViewController.h"
 #import "YTMUOfflinePlaybackManager.h"
+#import "YTMUOfflinePlayerVisualPolicy.h"
 #import "YTMUOfflinePlayerMenu.h"
 #import "../Headers/Localization.h"
+
+static const CGFloat YTMUOfflineMinimumTouchDimension = 44.0;
 
 static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
     return [NSBundle.ytmu_defaultBundle localizedStringForKey:key value:fallback table:nil];
@@ -18,6 +21,7 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
 @property (nonatomic, strong) UIButton *playPauseButton;
 @property (nonatomic, strong) UIButton *nextButton;
 @property (nonatomic, strong) UIButton *moreButton;
+@property (nonatomic, strong) NSLayoutConstraint *heightConstraint;
 @property (nonatomic, assign) BOOL sessionActive;
 @end
 
@@ -35,6 +39,10 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
         self.layer.borderWidth = 0.5;
         self.layer.borderColor = [UIColor.whiteColor colorWithAlphaComponent:0.14].CGColor;
         self.clipsToBounds = YES;
+        self.hidden = YES;
+        self.alpha = 0;
+        _heightConstraint = [self.heightAnchor constraintEqualToConstant:0];
+        _heightConstraint.active = YES;
 
         _artworkView = [[UIImageView alloc] init];
         _artworkView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -45,22 +53,30 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
 
         _titleLabel = [[UILabel alloc] init];
         _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        _titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+        _titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleSubheadline]
+            scaledFontForFont:[UIFont systemFontOfSize:14 weight:UIFontWeightSemibold]
+            maximumPointSize:18];
         _titleLabel.textColor = UIColor.whiteColor;
         _titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+        _titleLabel.adjustsFontForContentSizeCategory = YES;
+        _titleLabel.numberOfLines = 1;
 
         _artistLabel = [[UILabel alloc] init];
         _artistLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        _artistLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        _artistLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleCaption1]
+            scaledFontForFont:[UIFont systemFontOfSize:12 weight:UIFontWeightRegular]
+            maximumPointSize:15];
         _artistLabel.textColor = [UIColor.whiteColor colorWithAlphaComponent:0.58];
         _artistLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+        _artistLabel.adjustsFontForContentSizeCategory = YES;
+        _artistLabel.numberOfLines = 1;
 
         _badgeLabel = [[UILabel alloc] init];
         _badgeLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _badgeLabel.text = YTMUMiniPlayerLocalized(@"OFFLINE_BADGE", @"Offline");
         _badgeLabel.font = [UIFont systemFontOfSize:9 weight:UIFontWeightSemibold];
-        _badgeLabel.textColor = UIColor.systemPinkColor;
-        _badgeLabel.backgroundColor = [UIColor.systemPinkColor colorWithAlphaComponent:0.14];
+        _badgeLabel.textColor = UIColor.systemBlueColor;
+        _badgeLabel.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.17];
         _badgeLabel.layer.cornerRadius = 7;
         _badgeLabel.clipsToBounds = YES;
         _badgeLabel.textAlignment = NSTextAlignmentCenter;
@@ -68,17 +84,20 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
         _playPauseButton = [UIButton buttonWithType:UIButtonTypeSystem];
         _playPauseButton.translatesAutoresizingMaskIntoConstraints = NO;
         _playPauseButton.tintColor = UIColor.whiteColor;
+        _playPauseButton.accessibilityLabel = YTMUMiniPlayerLocalized(@"PLAY_PAUSE", @"Play or pause");
         [_playPauseButton addTarget:self action:@selector(togglePlayback:) forControlEvents:UIControlEventTouchUpInside];
 
         _nextButton = [UIButton buttonWithType:UIButtonTypeSystem];
         _nextButton.translatesAutoresizingMaskIntoConstraints = NO;
         _nextButton.tintColor = UIColor.whiteColor;
+        _nextButton.accessibilityLabel = YTMUMiniPlayerLocalized(@"NEXT", @"Next");
         [_nextButton setImage:[UIImage systemImageNamed:@"forward.end.fill"] forState:UIControlStateNormal];
         [_nextButton addTarget:self action:@selector(next:) forControlEvents:UIControlEventTouchUpInside];
 
         _moreButton = [UIButton buttonWithType:UIButtonTypeSystem];
         _moreButton.translatesAutoresizingMaskIntoConstraints = NO;
         _moreButton.tintColor = UIColor.whiteColor;
+        _moreButton.accessibilityLabel = YTMUMiniPlayerLocalized(@"MORE", @"More");
         [_moreButton setImage:[UIImage systemImageNamed:@"ellipsis"] forState:UIControlStateNormal];
         [_moreButton addTarget:self action:@selector(showMore:) forControlEvents:UIControlEventTouchUpInside];
 
@@ -97,32 +116,33 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
         [NSLayoutConstraint activateConstraints:@[
             [_artworkView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:10],
             [_artworkView.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-            [_artworkView.widthAnchor constraintEqualToConstant:56],
-            [_artworkView.heightAnchor constraintEqualToConstant:56],
+            [_artworkView.widthAnchor constraintEqualToConstant:60],
+            [_artworkView.heightAnchor constraintEqualToConstant:60],
 
             [_titleLabel.leadingAnchor constraintEqualToAnchor:_artworkView.trailingAnchor constant:10],
             [_titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_playPauseButton.leadingAnchor constant:-6],
-            [_titleLabel.bottomAnchor constraintEqualToAnchor:self.centerYAnchor constant:-3],
+            [_titleLabel.topAnchor constraintEqualToAnchor:self.topAnchor constant:9],
 
-            [_badgeLabel.leadingAnchor constraintEqualToAnchor:_titleLabel.leadingAnchor],
-            [_badgeLabel.topAnchor constraintEqualToAnchor:self.centerYAnchor constant:4],
-            [_badgeLabel.widthAnchor constraintEqualToConstant:48],
-            [_badgeLabel.heightAnchor constraintEqualToConstant:15],
-            [_artistLabel.leadingAnchor constraintEqualToAnchor:_badgeLabel.trailingAnchor constant:6],
-            [_artistLabel.centerYAnchor constraintEqualToAnchor:_badgeLabel.centerYAnchor],
+            [_artistLabel.leadingAnchor constraintEqualToAnchor:_titleLabel.leadingAnchor],
+            [_artistLabel.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:1],
             [_artistLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_playPauseButton.leadingAnchor constant:-6],
+            [_badgeLabel.leadingAnchor constraintEqualToAnchor:_titleLabel.leadingAnchor],
+            [_badgeLabel.topAnchor constraintEqualToAnchor:_artistLabel.bottomAnchor constant:3],
+            [_badgeLabel.widthAnchor constraintEqualToConstant:50],
+            [_badgeLabel.heightAnchor constraintEqualToConstant:15],
+            [_badgeLabel.bottomAnchor constraintLessThanOrEqualToAnchor:self.bottomAnchor constant:-7],
 
             [_playPauseButton.trailingAnchor constraintEqualToAnchor:_nextButton.leadingAnchor constant:-1],
             [_playPauseButton.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-            [_playPauseButton.widthAnchor constraintEqualToConstant:40],
+            [_playPauseButton.widthAnchor constraintEqualToConstant:YTMUOfflineMinimumTouchDimension],
             [_playPauseButton.heightAnchor constraintEqualToConstant:48],
             [_nextButton.trailingAnchor constraintEqualToAnchor:_moreButton.leadingAnchor constant:-1],
             [_nextButton.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-            [_nextButton.widthAnchor constraintEqualToConstant:38],
+            [_nextButton.widthAnchor constraintEqualToConstant:YTMUOfflineMinimumTouchDimension],
             [_nextButton.heightAnchor constraintEqualToConstant:48],
             [_moreButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-6],
             [_moreButton.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-            [_moreButton.widthAnchor constraintEqualToConstant:34],
+            [_moreButton.widthAnchor constraintEqualToConstant:YTMUOfflineMinimumTouchDimension],
             [_moreButton.heightAnchor constraintEqualToConstant:48],
         ]];
 
@@ -134,7 +154,7 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
 }
 
 - (CGSize)intrinsicContentSize {
-    return CGSizeMake(UIViewNoIntrinsicMetric, self.sessionActive ? 78 : 0);
+    return CGSizeMake(UIViewNoIntrinsicMetric, UIViewNoIntrinsicMetric);
 }
 
 - (void)dealloc {
@@ -155,13 +175,19 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
 }
 
 - (void)updateUI {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self updateUI]; });
+        return;
+    }
     YTMUOfflinePlaybackManager *manager = YTMUOfflinePlaybackManager.sharedManager;
     YTMUOfflineTrack *track = manager.currentTrack;
-    BOOL active = manager.offlineSessionActive && track != nil;
+    CGFloat targetHeight = YTMUOfflineMiniPlayerHeight(manager.offlineSessionActive, track != nil);
+    BOOL active = targetHeight > 0;
     BOOL visibilityChanged = active != self.sessionActive;
     self.sessionActive = active;
-    self.hidden = !active;
     self.accessibilityElementsHidden = !active;
+    self.heightConstraint.constant = targetHeight;
+    if (active) self.hidden = NO;
 
     self.titleLabel.text = track.title.length > 0 ? track.title : YTMUMiniPlayerLocalized(@"OFFLINE_PLAYER", @"Offline Player");
     self.artistLabel.text = track.artist ?: @"";
@@ -175,14 +201,26 @@ static NSString *YTMUMiniPlayerLocalized(NSString *key, NSString *fallback) {
     self.artworkView.tintColor = [UIColor.whiteColor colorWithAlphaComponent:0.65];
     NSString *symbol = manager.playing ? @"pause.fill" : @"play.fill";
     [self.playPauseButton setImage:[UIImage systemImageNamed:symbol] forState:UIControlStateNormal];
+    self.playPauseButton.accessibilityValue = manager.playing
+        ? YTMUMiniPlayerLocalized(@"PLAYING", @"Playing")
+        : YTMUMiniPlayerLocalized(@"PAUSED", @"Paused");
     self.playPauseButton.enabled = active;
     self.nextButton.enabled = active && manager.queue.count > 1;
     self.moreButton.enabled = active;
 
     if (visibilityChanged) {
-        [self invalidateIntrinsicContentSize];
         [self.superview setNeedsLayout];
-        [UIView animateWithDuration:0.2 animations:^{ [self.superview layoutIfNeeded]; }];
+        __weak typeof(self) weakSelf = self;
+        [UIView animateWithDuration:0.2
+                         animations:^{
+            weakSelf.alpha = active ? 1 : 0;
+            [weakSelf.superview layoutIfNeeded];
+        } completion:^(__unused BOOL finished) {
+            if (!weakSelf.sessionActive) weakSelf.hidden = YES;
+        }];
+    } else {
+        self.hidden = !active;
+        self.alpha = active ? 1 : 0;
     }
 }
 

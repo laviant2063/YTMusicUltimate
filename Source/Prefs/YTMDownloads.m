@@ -17,19 +17,6 @@ static NSString *YTMUDownloadsLocalized(NSString *key, NSString *fallback) {
     return [NSBundle.ytmu_defaultBundle localizedStringForKey:key value:fallback table:nil];
 }
 
-static UIButton *YTMUDownloadsHeaderButton(NSString *title, NSString *symbol) {
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    [button setTitle:title forState:UIControlStateNormal];
-    [button setImage:[UIImage systemImageNamed:symbol] forState:UIControlStateNormal];
-    button.tintColor = UIColor.whiteColor;
-    button.backgroundColor = [UIColor.whiteColor colorWithAlphaComponent:0.12];
-    button.layer.cornerRadius = 10;
-    button.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-    button.titleLabel.adjustsFontSizeToFitWidth = YES;
-    button.imageEdgeInsets = UIEdgeInsetsMake(0, -4, 0, 4);
-    return button;
-}
-
 @interface YTMDownloads ()
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) NSArray<YTMUOfflineTrack *> *tracks;
@@ -51,27 +38,10 @@ static UIButton *YTMUDownloadsHeaderButton(NSString *title, NSString *symbol) {
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.backgroundColor = [UIColor colorWithRed:3/255.0 green:3/255.0 blue:3/255.0 alpha:1.0];
-
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 1, 72)];
-    UIButton *playAll = YTMUDownloadsHeaderButton(YTMUDownloadsLocalized(@"PLAY_ALL", @"Play All"), @"play.fill");
-    UIButton *shuffle = YTMUDownloadsHeaderButton(YTMUDownloadsLocalized(@"SHUFFLE_PLAY", @"Shuffle"), @"shuffle");
-    UIButton *newPlaylist = YTMUDownloadsHeaderButton(YTMUDownloadsLocalized(@"NEW_PLAYLIST", @"New Playlist"), @"plus");
-    [playAll addTarget:self action:@selector(playAll:) forControlEvents:UIControlEventTouchUpInside];
-    [shuffle addTarget:self action:@selector(shufflePlay:) forControlEvents:UIControlEventTouchUpInside];
-    [newPlaylist addTarget:self action:@selector(createPlaylist:) forControlEvents:UIControlEventTouchUpInside];
-    UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[playAll, shuffle, newPlaylist]];
-    buttons.translatesAutoresizingMaskIntoConstraints = NO;
-    buttons.axis = UILayoutConstraintAxisHorizontal;
-    buttons.spacing = 8;
-    buttons.distribution = UIStackViewDistributionFillEqually;
-    [header addSubview:buttons];
-    [NSLayoutConstraint activateConstraints:@[
-        [buttons.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:12],
-        [buttons.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-12],
-        [buttons.topAnchor constraintEqualToAnchor:header.topAnchor constant:10],
-        [buttons.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-10],
-    ]];
-    self.tableView.tableHeaderView = header;
+    self.tableView.tableHeaderView = nil;
+    if (@available(iOS 15.0, *)) {
+        self.tableView.sectionHeaderTopPadding = 4;
+    }
 
     self.emptyLabel = [[UILabel alloc] init];
     self.emptyLabel.text = YTMUDownloadsLocalized(@"EMPTY", @"Content you download will show here");
@@ -310,9 +280,19 @@ static UIButton *YTMUDownloadsHeaderButton(NSString *title, NSString *symbol) {
 - (UIContextMenuConfiguration *)tableView:(UITableView *)tableView
     contextMenuConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
                                       point:(CGPoint)point API_AVAILABLE(ios(13.0)) {
+    __weak typeof(self) weakSelf = self;
+    if (indexPath.section == YTMUDownloadsSectionPlaylists && indexPath.row == 0) {
+        return [UIContextMenuConfiguration configurationWithIdentifier:@"OfflinePlaylistActions"
+            previewProvider:nil actionProvider:^UIMenu *(__unused NSArray<UIMenuElement *> *suggestedActions) {
+            UIAction *newPlaylist = [UIAction
+                actionWithTitle:YTMUDownloadsLocalized(@"NEW_PLAYLIST", @"New Playlist")
+                image:[UIImage systemImageNamed:@"text.badge.plus"] identifier:nil
+                handler:^(__unused UIAction *action) { [weakSelf createPlaylist:nil]; }];
+            return [UIMenu menuWithTitle:@"" children:@[newPlaylist]];
+        }];
+    }
     if (indexPath.section != YTMUDownloadsSectionTracks) return nil;
     YTMUOfflineTrack *track = self.tracks[(NSUInteger)indexPath.row];
-    __weak typeof(self) weakSelf = self;
     return [UIContextMenuConfiguration configurationWithIdentifier:track.trackID previewProvider:nil actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
         UIAction *playOnly = [UIAction actionWithTitle:YTMUDownloadsLocalized(@"PLAY_THIS_SONG_ONLY", @"Play This Song Only")
                                                  image:[UIImage systemImageNamed:@"play.circle"] identifier:nil
