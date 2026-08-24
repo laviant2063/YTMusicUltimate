@@ -121,12 +121,15 @@
     if (controller == nil) return;
     [self performOnMainSynchronously:^{
         [self.miniPlayerControllers addObject:controller];
-        [self applyMiniPlayerSuppressionToController:controller];
+        if (self.miniPlayerSuppressed) {
+            [self applyMiniPlayerSuppressionToController:controller];
+        }
     }];
 }
 
 - (void)setNativeMiniPlayerSuppressed:(BOOL)suppressed {
     [self performOnMainSynchronously:^{
+        if (self.miniPlayerSuppressed == suppressed) return;
         self.miniPlayerSuppressed = suppressed;
         for (UIViewController *controller in self.miniPlayerControllers.allObjects) {
             [self applyMiniPlayerSuppressionToController:controller];

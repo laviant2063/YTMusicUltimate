@@ -27,6 +27,7 @@ static NSUInteger failures = 0;
 @property (nonatomic, assign) BOOL nativeMiniPlayerSuppressed;
 @property (nonatomic, assign) NSUInteger pauseRequestCount;
 @property (nonatomic, assign) NSUInteger toastCount;
+@property (nonatomic, assign) NSUInteger suppressionUpdateCount;
 @end
 
 @implementation YTMUTestNativeAdapter
@@ -45,6 +46,7 @@ static NSUInteger failures = 0;
 }
 - (void)setNativeMiniPlayerSuppressed:(BOOL)suppressed {
     _nativeMiniPlayerSuppressed = suppressed;
+    self.suppressionUpdateCount++;
 }
 - (void)showOfflineEndedForNativeToast {
     self.toastCount++;
@@ -53,11 +55,16 @@ static NSUInteger failures = 0;
 
 @interface YTMUTestOfflineController : NSObject <YTMUOfflineSessionControlling>
 @property (nonatomic, assign, getter=isOfflineSessionActive) BOOL offlineSessionActive;
+@property (nonatomic, assign) NSUInteger sessionStateReadCount;
 @property (nonatomic, assign) NSUInteger endCount;
 @property (nonatomic, assign) YTMUOfflineSessionEndReason lastReason;
 @end
 
 @implementation YTMUTestOfflineController
+- (BOOL)isOfflineSessionActive {
+    self.sessionStateReadCount++;
+    return _offlineSessionActive;
+}
 - (void)endOfflineSessionWithReason:(YTMUOfflineSessionEndReason)reason {
     if (!self.offlineSessionActive) {
         return;
@@ -164,6 +171,23 @@ static void testNativeStartCancelsPendingOfflineGrant(void) {
     ASSERT_EQUAL_INTEGER(YTMUPlaybackOwnerNative, coordinator.owner);
 }
 
+static void testIdleNativeStartDoesNotTouchOfflineRuntime(void) {
+    YTMUTestNativeAdapter *native = nil;
+    YTMUTestOfflineController *offline = nil;
+    YTMUPlaybackCoordinator *coordinator = MakeCoordinator(&native, &offline);
+
+    [coordinator nativePlaybackWillStart];
+
+    ASSERT_EQUAL_INTEGER(0, offline.sessionStateReadCount);
+    ASSERT_EQUAL_INTEGER(0, native.suppressionUpdateCount);
+    ASSERT_EQUAL_INTEGER(YTMUPlaybackOwnerTransitioning, coordinator.owner);
+    ASSERT_EQUAL_INTEGER(YTMUPlaybackOwnerNative, coordinator.targetOwner);
+
+    [coordinator nativePlaybackDidStart];
+    ASSERT_EQUAL_INTEGER(YTMUPlaybackOwnerNative, coordinator.owner);
+    ASSERT_TRUE(coordinator.nativeAudioPlaying);
+}
+
 static void testOfflineToNativeEndsOfflineBeforeNativeStarts(void) {
     YTMUTestNativeAdapter *native = nil;
     YTMUTestOfflineController *offline = nil;
@@ -234,6 +258,7 @@ int main(void) {
         testNativeToOfflineWaitsForConfirmedPause();
         testNativePauseFailureCancelsOfflineStart();
         testNativeStartCancelsPendingOfflineGrant();
+        testIdleNativeStartDoesNotTouchOfflineRuntime();
         testOfflineToNativeEndsOfflineBeforeNativeStarts();
         testOfflineEndIsIdempotent();
         testNativePauseRetainsNativeOwnership();

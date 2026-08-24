@@ -28,7 +28,7 @@ static void YTMUPrepareForNativePlayback(UIViewController *controller) {
     %orig;
 }
 
-- (void)replayWithSeekSource:(NSInteger)source {
+- (void)replayWithSeekSource:(int)source {
     YTMUPrepareForNativePlayback(self);
     %orig(source);
 }
@@ -41,7 +41,7 @@ static void YTMUPrepareForNativePlayback(UIViewController *controller) {
     });
 }
 
-- (void)pauseWithStoppageReason:(NSInteger)reason {
+- (void)pauseWithStoppageReason:(int)reason {
     %orig(reason);
     [YTMUNativePlaybackAdapter.sharedAdapter registerPlayerViewController:self];
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -88,16 +88,16 @@ static void YTMUPrepareForNativePlayback(UIViewController *controller) {
     [YTMUNativePlaybackAdapter.sharedAdapter refreshNativePlaybackState];
 }
 
-- (void)handlePlayCommand:(id)command {
+- (long long)handlePlayCommand:(id)command {
     [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
-    %orig(command);
+    return %orig(command);
 }
 
-- (void)handleTogglePlayPauseCommand:(id)command {
+- (long long)handleTogglePlayPauseCommand:(id)command {
     if (!YTMUNativePlaybackAdapter.sharedAdapter.nativePlaybackAudible) {
         [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
     }
-    %orig(command);
+    return %orig(command);
 }
 
 - (void)didTapPlayButton {
@@ -115,7 +115,7 @@ static void YTMUPrepareForNativePlayback(UIViewController *controller) {
     %orig(model, view, expand, startPlayback);
 }
 
-- (void)loadWithModel:(id)model fromView:(id)view pageLayout:(id)layout startPlayback:(BOOL)startPlayback {
+- (void)loadWithModel:(id)model fromView:(id)view pageLayout:(long long)layout startPlayback:(BOOL)startPlayback {
     if (startPlayback) [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
     %orig(model, view, layout, startPlayback);
 }

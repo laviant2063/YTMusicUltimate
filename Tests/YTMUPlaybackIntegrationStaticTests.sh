@@ -17,6 +17,27 @@ grep -Fq '%hook YTMWatchViewController' "$hooks"
 grep -Fq 'nativePlaybackWillStart' "$hooks"
 grep -Fq 'playbackControllerDidPlay' "$hooks"
 grep -Fq 'playbackControllerDidPause' "$hooks"
+
+if grep -Fq 'pageLayout:(id)layout' "$hooks"; then
+  echo "YTMWatchViewController pageLayout must match the 9.14 long long ABI" >&2
+  exit 1
+fi
+if grep -Fq -- '- (void)handlePlayCommand:' "$hooks" \
+  || grep -Fq -- '- (void)handleTogglePlayPauseCommand:' "$hooks"; then
+  echo "Native remote command hooks must preserve their long long return ABI" >&2
+  exit 1
+fi
+
+grep -Fq 'pageLayout:(long long)layout' "$hooks"
+grep -Fq -- '- (long long)handlePlayCommand:(id)command' "$hooks"
+grep -Fq -- '- (long long)handleTogglePlayPauseCommand:(id)command' "$hooks"
+grep -Fq -- '- (void)replayWithSeekSource:(int)source' "$hooks"
+grep -Fq -- '- (void)pauseWithStoppageReason:(int)reason' "$hooks"
+if [[ "$(grep -Fc 'return %orig(command);' "$hooks")" -ne 2 ]]; then
+  echo "Native remote command hooks must return both original results" >&2
+  exit 1
+fi
+
 grep -Fq 'MPNowPlayingSession' "$manager"
 grep -Fq 'endOfflineSessionWithReason:' "$manager"
 
@@ -31,4 +52,5 @@ grep -Fq 'YTMUPerformObjectiveCBlockSafely' "$manager"
 grep -Fq 'fallBackToSharedMediaControls' "$manager"
 grep -Fq 'loadCurrentTrackAndPlayUnchecked' "$manager"
 grep -Fq 'YTMUPerformObjectiveCBlockSafely' "$adapter"
+grep -Fq 'if (self.miniPlayerSuppressed == suppressed) return;' "$adapter"
 echo "Playback integration static tests passed"

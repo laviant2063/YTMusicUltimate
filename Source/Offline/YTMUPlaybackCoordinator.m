@@ -249,17 +249,25 @@ typedef NS_ENUM(NSInteger, YTMUPlaybackCoordinatorErrorCode) {
                                       description:@"Offline playback was cancelled because YouTube Music started."];
             [self finishPendingOfflineTransitionGranted:NO error:error];
         }
+
+        if (self.owner == YTMUPlaybackOwnerNative
+            || (self.owner == YTMUPlaybackOwnerTransitioning
+                && self.targetOwner == YTMUPlaybackOwnerNative)) {
+            return;
+        }
+
+        if (self.owner == YTMUPlaybackOwnerNone) {
+            self.transitionGeneration++;
+            self.ownershipState = YTMUPlaybackBeginTransition(self.ownershipState,
+                                                              YTMUPlaybackOwnerNative);
+            [self postOwnershipChange];
+            return;
+        }
+
         id<YTMUOfflineSessionControlling> offlineController = self.offlineController;
         BOOL hadOfflineSession = self.owner == YTMUPlaybackOwnerOffline
             || offlineController.offlineSessionActive;
         self.shouldShowNativeTransitionToast = self.shouldShowNativeTransitionToast || hadOfflineSession;
-        if (self.owner == YTMUPlaybackOwnerTransitioning
-            && self.targetOwner == YTMUPlaybackOwnerNative) {
-            if (hadOfflineSession) {
-                [offlineController endOfflineSessionWithReason:YTMUOfflineSessionEndReasonNativePlaybackStarted];
-            }
-            return;
-        }
         self.transitionGeneration++;
         self.ownershipState = YTMUPlaybackBeginTransition(self.ownershipState,
                                                           YTMUPlaybackOwnerNative);
@@ -273,8 +281,9 @@ typedef NS_ENUM(NSInteger, YTMUPlaybackCoordinatorErrorCode) {
 
 - (void)nativePlaybackDidStart {
     [self performOnMainSynchronously:^{
-        id<YTMUOfflineSessionControlling> offlineController = self.offlineController;
-        if (self.owner == YTMUPlaybackOwnerOffline || offlineController.offlineSessionActive) {
+        if (self.owner == YTMUPlaybackOwnerOffline
+            || (self.owner == YTMUPlaybackOwnerTransitioning
+                && self.targetOwner == YTMUPlaybackOwnerOffline)) {
             [self nativePlaybackWillStart];
         }
         self.transitionGeneration++;
