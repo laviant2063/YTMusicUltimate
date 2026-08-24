@@ -1,5 +1,6 @@
 #import "YTMUNativePlaybackAdapter.h"
 
+#import "YTMUNativeMiniPlayerVisibilityPolicy.h"
 #import "YTMUObjectiveCExceptionGuard.h"
 
 #import <objc/message.h>
@@ -7,10 +8,14 @@
 
 #include <string.h>
 
+// YouTube Music 9.14.2's YTMWatchPageLayoutControllerImpl -dismiss sets layout 6.
+static const long long YTMUNativeMiniPlayerDismissedLayout = 6;
+
 @interface YTMUNativeMiniPlayerSnapshot : NSObject
 @property (nonatomic, assign) BOOL hidden;
 @property (nonatomic, assign) CGFloat alpha;
 @property (nonatomic, assign) BOOL userInteractionEnabled;
+@property (nonatomic, assign) CGAffineTransform transform;
 @end
 
 
@@ -25,6 +30,17 @@
 @property (nonatomic, strong) NSMapTable<UIViewController *, YTMUNativeMiniPlayerSnapshot *> *miniPlayerSnapshots;
 @property (nonatomic, assign) BOOL miniPlayerSuppressed;
 @property (nonatomic, assign, readwrite, getter=isNativePlaybackAudible) BOOL nativePlaybackAudible;
+@property (nonatomic, assign) BOOL nativeSessionActive;
+@property (nonatomic, assign) BOOL nativeSessionEndConfirmed;
+@property (nonatomic, assign, readwrite, getter=isNativeEmptyMiniPlayerCollapsed) BOOL nativeEmptyMiniPlayerCollapsed;
+@property (nonatomic, assign) NSUInteger nativeMiniPlayerVisibilityGeneration;
+- (YTMUNativeMiniPlayerVisibilityAction)nativeMiniPlayerVisibilityAction;
+- (void)applyMiniPlayerSuppressionToController:(UIViewController *)controller;
+- (void)applyNativeMiniPlayerVisibilityState;
+- (void)restoreNativeMiniPlayerForPlaybackStart;
+- (void)collapseEmptyNativeMiniPlayerAfterConfirmedSessionEnd;
+- (BOOL)collapseEmptyNativeMiniPlayerAfterConfirmedSessionEndForGeneration:(NSUInteger)generation
+                                                                      error:(NSError * _Nullable __autoreleasing * _Nullable)error;
 @end
 
 
@@ -79,18 +95,32 @@
                 }
             }, NULL);
         }
+        [self applyNativeMiniPlayerVisibilityState];
     }];
+}
+
+- (YTMUNativeMiniPlayerVisibilityAction)nativeMiniPlayerVisibilityAction {
+    YTMUPlaybackCoordinator *coordinator = YTMUPlaybackCoordinator.sharedCoordinator;
+    return YTMUNativeMiniPlayerVisibilityActionForState(
+        coordinator.owner,
+        coordinator.targetOwner,
+        self.nativeSessionActive,
+        self.nativeSessionEndConfirmed,
+        self.miniPlayerSuppressed,
+        self.nativeEmptyMiniPlayerCollapsed);
 }
 
 - (void)applyMiniPlayerSuppressionToControllerWithoutThrowing:(UIViewController *)controller {
     if (controller == nil || !controller.isViewLoaded) return;
     UIView *view = controller.view;
-    if (self.miniPlayerSuppressed) {
+    YTMUNativeMiniPlayerVisibilityAction action = [self nativeMiniPlayerVisibilityAction];
+    if (action == YTMUNativeMiniPlayerVisibilityActionSuppressForOffline) {
         if ([self.miniPlayerSnapshots objectForKey:controller] == nil) {
             YTMUNativeMiniPlayerSnapshot *snapshot = [[YTMUNativeMiniPlayerSnapshot alloc] init];
             snapshot.hidden = view.hidden;
             snapshot.alpha = view.alpha;
             snapshot.userInteractionEnabled = view.userInteractionEnabled;
+            snapshot.transform = view.transform;
             [self.miniPlayerSnapshots setObject:snapshot forKey:controller];
         }
         view.hidden = YES;
@@ -100,10 +130,15 @@
     }
 
     YTMUNativeMiniPlayerSnapshot *snapshot = [self.miniPlayerSnapshots objectForKey:controller];
-    if (snapshot != nil) {
+    // Offline suppression and an ended native session are independent. Keep the
+    // suppression snapshot hidden until a real native playback start restores it.
+    BOOL shouldKeepSuppressionSnapshotHidden =
+        action == YTMUNativeMiniPlayerVisibilityActionEnsureEmptyShellCollapsed;
+    if (snapshot != nil && !shouldKeepSuppressionSnapshotHidden) {
         view.hidden = snapshot.hidden;
         view.alpha = snapshot.alpha;
         view.userInteractionEnabled = snapshot.userInteractionEnabled;
+        view.transform = snapshot.transform;
         [self.miniPlayerSnapshots removeObjectForKey:controller];
     }
 }
@@ -124,8 +159,10 @@
     if (controller == nil) return;
     [self performOnMainSynchronously:^{
         [self.miniPlayerControllers addObject:controller];
-        if (self.miniPlayerSuppressed) {
-            [self applyMiniPlayerSuppressionToController:controller];
+        [self applyMiniPlayerSuppressionToController:controller];
+        if ([self nativeMiniPlayerVisibilityAction]
+            == YTMUNativeMiniPlayerVisibilityActionEnsureEmptyShellCollapsed) {
+            [self collapseEmptyNativeMiniPlayerAfterConfirmedSessionEnd];
         }
     }];
 }
@@ -134,9 +171,7 @@
     [self performOnMainSynchronously:^{
         if (self.miniPlayerSuppressed == suppressed) return;
         self.miniPlayerSuppressed = suppressed;
-        for (UIViewController *controller in self.miniPlayerControllers.allObjects) {
-            [self applyMiniPlayerSuppressionToController:controller];
-        }
+        [self applyNativeMiniPlayerVisibilityState];
     }];
 }
 
@@ -144,6 +179,168 @@
     __block BOOL suppressed = NO;
     [self performOnMainSynchronously:^{ suppressed = self.miniPlayerSuppressed; }];
     return suppressed;
+}
+
+- (NSError *)nativeMiniPlayerErrorWithCode:(NSInteger)code description:(NSString *)description {
+    return [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
+                               code:code
+                           userInfo:@{NSLocalizedDescriptionKey: description}];
+}
+
+- (id)nativeLayoutControllerForWatchController:(UIViewController *)watch
+                                          error:(NSError **)error {
+    Class watchClass = NSClassFromString(@"YTMWatchViewController");
+    if (watch == nil || watchClass == Nil || ![watch isKindOfClass:watchClass]) {
+        if (error != NULL) {
+            *error = [self nativeMiniPlayerErrorWithCode:10
+                                              description:@"The YouTube Music watch controller is unavailable."];
+        }
+        return nil;
+    }
+
+    Ivar layoutIvar = class_getInstanceVariable(watch.class, "_watchPageLayoutController");
+    const char *layoutType = layoutIvar == NULL ? NULL : ivar_getTypeEncoding(layoutIvar);
+    if (layoutIvar == NULL
+        || layoutType == NULL
+        || strcmp(layoutType, "@\"<YTMWatchPageLayoutControllerInternal>\"") != 0) {
+        if (error != NULL) {
+            *error = [self nativeMiniPlayerErrorWithCode:11
+                                              description:@"This YouTube Music version has an incompatible mini-player layout controller."];
+        }
+        return nil;
+    }
+
+    __block id layoutController = nil;
+    NSException *resolutionException = nil;
+    BOOL resolvedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        layoutController = object_getIvar(watch, layoutIvar);
+    }, &resolutionException);
+    Class layoutClass = NSClassFromString(@"YTMWatchPageLayoutControllerImpl");
+    if (!resolvedSafely
+        || layoutController == nil
+        || layoutClass == Nil
+        || ![layoutController isKindOfClass:layoutClass]) {
+        if (error != NULL) {
+            *error = [self nativeMiniPlayerErrorWithCode:12
+                                              description:resolutionException.reason
+                                                  ?: @"The YouTube Music mini-player layout could not be resolved."];
+        }
+        return nil;
+    }
+
+    SEL dismissSelector = NSSelectorFromString(@"dismiss");
+    SEL currentLayoutSelector = NSSelectorFromString(@"currentLayout");
+    Method dismissMethod = class_getInstanceMethod([layoutController class], dismissSelector);
+    Method currentLayoutMethod = class_getInstanceMethod([layoutController class], currentLayoutSelector);
+    const char *dismissEncoding = dismissMethod == NULL ? NULL : method_getTypeEncoding(dismissMethod);
+    const char *currentLayoutEncoding = currentLayoutMethod == NULL
+        ? NULL
+        : method_getTypeEncoding(currentLayoutMethod);
+    if (![layoutController respondsToSelector:dismissSelector]
+        || ![layoutController respondsToSelector:currentLayoutSelector]
+        || dismissEncoding == NULL
+        || currentLayoutEncoding == NULL
+        || strcmp(dismissEncoding, "v16@0:8") != 0
+        || strcmp(currentLayoutEncoding, "q16@0:8") != 0) {
+        if (error != NULL) {
+            *error = [self nativeMiniPlayerErrorWithCode:13
+                                              description:@"This YouTube Music version has incompatible mini-player layout commands."];
+        }
+        return nil;
+    }
+    if (error != NULL) *error = nil;
+    return layoutController;
+}
+
+- (BOOL)collapseEmptyNativeMiniPlayerAfterConfirmedSessionEndForGeneration:(NSUInteger)generation
+                                                                      error:(NSError **)error {
+    YTMUNativeMiniPlayerVisibilityAction action = [self nativeMiniPlayerVisibilityAction];
+    if (generation != self.nativeMiniPlayerVisibilityGeneration
+        || action != YTMUNativeMiniPlayerVisibilityActionEnsureEmptyShellCollapsed) {
+        if (error != NULL) *error = nil;
+        return NO;
+    }
+
+    NSError *layoutError = nil;
+    id layoutController = [self nativeLayoutControllerForWatchController:self.watchViewController
+                                                                    error:&layoutError];
+    if (layoutController == nil) {
+        if (error != NULL) *error = layoutError;
+        return NO;
+    }
+
+    __block BOOL collapsed = NO;
+    NSException *collapseException = nil;
+    BOOL invokedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        SEL currentLayoutSelector = NSSelectorFromString(@"currentLayout");
+        long long (*sendInteger)(id, SEL) = (void *)objc_msgSend;
+        long long currentLayout = sendInteger(layoutController, currentLayoutSelector);
+        if (currentLayout != YTMUNativeMiniPlayerDismissedLayout) {
+            SEL dismissSelector = NSSelectorFromString(@"dismiss");
+            void (*sendVoid)(id, SEL) = (void *)objc_msgSend;
+            sendVoid(layoutController, dismissSelector);
+            currentLayout = sendInteger(layoutController, currentLayoutSelector);
+        }
+        collapsed = currentLayout == YTMUNativeMiniPlayerDismissedLayout;
+    }, &collapseException);
+    if (!invokedSafely || !collapsed) {
+        if (error != NULL) {
+            *error = [self nativeMiniPlayerErrorWithCode:14
+                                              description:collapseException.reason
+                                                  ?: @"The YouTube Music mini-player could not be collapsed."];
+        }
+        return NO;
+    }
+
+    if (generation != self.nativeMiniPlayerVisibilityGeneration
+        || [self nativeMiniPlayerVisibilityAction]
+            != YTMUNativeMiniPlayerVisibilityActionEnsureEmptyShellCollapsed) {
+        if (error != NULL) *error = nil;
+        return NO;
+    }
+    self.nativeEmptyMiniPlayerCollapsed = YES;
+    if (error != NULL) *error = nil;
+    return YES;
+}
+
+- (void)collapseEmptyNativeMiniPlayerAfterConfirmedSessionEnd {
+    NSAssert(NSThread.isMainThread, @"Native mini-player layout must be updated on the main thread.");
+    NSUInteger generation = self.nativeMiniPlayerVisibilityGeneration;
+    NSError *collapseError = nil;
+    BOOL collapsed = [self collapseEmptyNativeMiniPlayerAfterConfirmedSessionEndForGeneration:generation
+                                                                                         error:&collapseError];
+    if (!collapsed && collapseError != nil) {
+        NSLog(@"[YTMusicUltimate] Native empty mini-player collapse failed: %@",
+              collapseError.localizedDescription);
+    }
+}
+
+- (void)applyNativeMiniPlayerVisibilityState {
+    NSAssert(NSThread.isMainThread, @"Native mini-player visibility must be updated on the main thread.");
+    YTMUNativeMiniPlayerVisibilityAction action = [self nativeMiniPlayerVisibilityAction];
+    for (UIViewController *controller in self.miniPlayerControllers.allObjects) {
+        [self applyMiniPlayerSuppressionToController:controller];
+    }
+    if (action == YTMUNativeMiniPlayerVisibilityActionEnsureEmptyShellCollapsed) {
+        [self collapseEmptyNativeMiniPlayerAfterConfirmedSessionEnd];
+    } else if (action == YTMUNativeMiniPlayerVisibilityActionRestoreForNativePlayback) {
+        self.nativeEmptyMiniPlayerCollapsed = NO;
+    }
+}
+
+- (void)restoreNativeMiniPlayerForPlaybackStart {
+    NSAssert(NSThread.isMainThread, @"Native mini-player restore must run on the main thread.");
+    self.nativeMiniPlayerVisibilityGeneration++;
+    self.nativeSessionActive = YES;
+    self.nativeSessionEndConfirmed = NO;
+    self.nativeEmptyMiniPlayerCollapsed = NO;
+    [self applyNativeMiniPlayerVisibilityState];
+}
+
+- (void)prepareNativeMiniPlayerForPlaybackStart {
+    [self performOnMainSynchronously:^{
+        [self restoreNativeMiniPlayerForPlaybackStart];
+    }];
 }
 
 - (BOOL)watchControllerReportsPlayback {
@@ -280,6 +477,12 @@
             return;
         }
 
+        NSError *layoutError = nil;
+        if ([self nativeLayoutControllerForWatchController:watch error:&layoutError] == nil) {
+            requestError = layoutError;
+            return;
+        }
+
         Method resetAndHideMethod = class_getInstanceMethod(watch.class, resetAndHideSelector);
         const char *typeEncoding = resetAndHideMethod == NULL
             ? NULL
@@ -312,11 +515,23 @@
             [coordinator nativePlaybackSessionDidEnd];
         }
         ended = !stillPlaying && coordinator.owner == YTMUPlaybackOwnerNone;
+        if (ended) {
+            self.nativeSessionActive = NO;
+            self.nativeSessionEndConfirmed = YES;
+            NSUInteger generation = self.nativeMiniPlayerVisibilityGeneration;
+            NSError *collapseError = nil;
+            if (![self collapseEmptyNativeMiniPlayerAfterConfirmedSessionEndForGeneration:generation
+                                                                                     error:&collapseError]) {
+                ended = NO;
+                requestError = collapseError
+                    ?: [self nativeMiniPlayerErrorWithCode:15
+                                               description:@"YouTube Music stopped, but its empty mini-player could not be collapsed."];
+            }
+        }
         if (!ended) {
-            requestError = [NSError errorWithDomain:@"YTMUNativePlaybackAdapterErrorDomain"
-                                               code:8
-                                           userInfo:@{NSLocalizedDescriptionKey:
-                                                          @"YouTube Music playback was not confirmed as stopped."}];
+            requestError = requestError
+                ?: [self nativeMiniPlayerErrorWithCode:8
+                                           description:@"YouTube Music playback was not confirmed as stopped."];
         }
     }];
 
@@ -327,7 +542,10 @@
 }
 
 - (void)nativePlaybackDidStart {
-    [self performOnMainSynchronously:^{ self.nativePlaybackAudible = YES; }];
+    [self performOnMainSynchronously:^{
+        [self restoreNativeMiniPlayerForPlaybackStart];
+        self.nativePlaybackAudible = YES;
+    }];
 }
 
 - (void)nativePlaybackDidPause {
@@ -335,7 +553,19 @@
 }
 
 - (void)nativePlaybackSessionDidEnd {
-    [self performOnMainSynchronously:^{ self.nativePlaybackAudible = NO; }];
+    [self performOnMainSynchronously:^{
+        self.nativePlaybackAudible = NO;
+        self.nativeSessionActive = NO;
+        self.nativeSessionEndConfirmed = YES;
+        self.nativeEmptyMiniPlayerCollapsed = NO;
+        NSUInteger generation = ++self.nativeMiniPlayerVisibilityGeneration;
+        // resetAndHide internally calls reset and then collapse. Let that stack
+        // unwind before moving from its visible collapsed layout to dismissed.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self.nativeMiniPlayerVisibilityGeneration) return;
+            [self applyNativeMiniPlayerVisibilityState];
+        });
+    }];
 }
 
 - (void)refreshNativePlaybackState {
@@ -344,6 +574,8 @@
         BOOL isPlaying = [self watchControllerReportsPlayback];
         self.nativePlaybackAudible = isPlaying;
         if (isPlaying && !wasPlaying) {
+            [self restoreNativeMiniPlayerForPlaybackStart];
+            self.nativePlaybackAudible = YES;
             [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackDidStart];
         } else if (!isPlaying && wasPlaying) {
             [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackDidPause];

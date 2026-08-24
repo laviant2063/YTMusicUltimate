@@ -10,6 +10,7 @@ other_settings="$repo_root/Source/OtherSettings.x"
 playback_hooks="$repo_root/Source/Offline/YTMUOfflinePlaybackHooks.x"
 native_adapter="$repo_root/Source/Offline/YTMUNativePlaybackAdapter.m"
 native_swipe="$repo_root/Source/Offline/YTMUNativeMiniPlayerSwipeController.m"
+native_visibility_policy="$repo_root/Source/Offline/YTMUNativeMiniPlayerVisibilityPolicy.m"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -148,6 +149,29 @@ assert_contains "$native_adapter" "NSSelectorFromString(@\"resetAndHide\")" \
   "native adapter does not use the verified no-argument teardown selector"
 assert_contains "$native_adapter" "YTMUPerformObjectiveCBlockSafely" \
   "native teardown selector is not exception-contained"
+[[ -f "$native_visibility_policy" ]] || fail "native empty-shell visibility policy is missing"
+assert_contains "$native_adapter" "collapseEmptyNativeMiniPlayerAfterConfirmedSessionEnd" \
+  "confirmed native session end does not collapse the empty shell"
+assert_contains "$native_adapter" "restoreNativeMiniPlayerForPlaybackStart" \
+  "new native playback cannot restore a previously collapsed mini-player"
+assert_contains "$native_adapter" "YTMUNativeMiniPlayerVisibilityActionForState" \
+  "native mini-player visibility is not delegated to the pure state policy"
+assert_contains "$native_adapter" "_watchPageLayoutController" \
+  "native empty-shell collapse does not resolve the verified layout controller"
+assert_contains "$native_adapter" "YTMUNativeMiniPlayerDismissedLayout" \
+  "native empty-shell collapse is not tied to the dismissed layout state"
+assert_contains "$native_adapter" "nativeMiniPlayerVisibilityGeneration" \
+  "stale collapse work cannot be invalidated by a new native session"
+assert_contains "$native_adapter" "nativeSessionEndConfirmed" \
+  "unconfirmed launch state can be mistaken for an ended native session"
+assert_not_contains "$native_adapter" "Nothing is playing" \
+  "native empty-shell collapse depends on a localized display string"
+assert_not_contains "$native_adapter" "removeFromSuperview" \
+  "native mini-player view is removed instead of using native layout state"
+assert_not_contains "$native_adapter" "removeFromParentViewController" \
+  "native mini-player controller is removed from its parent"
+assert_not_contains "$native_adapter" "handleLayoutChangeToDismissed" \
+  "watch layout callback is called directly instead of the layout controller"
 
 # Full-screen UI requirements: bounded asynchronous artwork palette, stale
 # result protection, accessible controls, repeat-one state and queue metadata.
@@ -199,13 +223,15 @@ assert_before "$player_menu" "@\"AirPlay\"" "CURRENT_QUEUE" \
 assert_before "$player_menu" "CURRENT_QUEUE" "OFFLINE_END_PLAYBACK" \
   "current queue must precede offline stop"
 
-# Pin the validated playback and persistence core. The adapter and hook hashes
-# include only the audited native mini-player installation/teardown additions.
+# Pin the validated playback and persistence core. The adapter, hook and
+# visibility-policy hashes include the audited native empty-shell collapse path.
 assert_unchanged_blob "Source/Offline/YTMUOfflinePlaybackManager.m" "cda6af9a764448e9d5746a1584885fa125c4e7a4"
 assert_unchanged_blob "Source/Offline/YTMUPlaybackCoordinator.m" "942f7c775831cf9bbdee7216943bf78186000603"
-assert_unchanged_blob "Source/Offline/YTMUNativePlaybackAdapter.h" "1d10947b97020429ea195d16ed01dfad4e21286e"
-assert_unchanged_blob "Source/Offline/YTMUNativePlaybackAdapter.m" "695bc40d2a25037b3ce48bc28a2383dfc8fd85c0"
-assert_unchanged_blob "Source/Offline/YTMUOfflinePlaybackHooks.x" "63b8d3925216b88218de27474e22f3c581134f97"
+assert_unchanged_blob "Source/Offline/YTMUNativePlaybackAdapter.h" "c8db84580c3ceeb7cc935be590484061abc9c20a"
+assert_unchanged_blob "Source/Offline/YTMUNativePlaybackAdapter.m" "25b53033310d428dc4c19f8d0a459ea556dd5770"
+assert_unchanged_blob "Source/Offline/YTMUOfflinePlaybackHooks.x" "f9212ab416ea7c6ea2cc752387fc28ea997734db"
+assert_unchanged_blob "Source/Offline/YTMUNativeMiniPlayerVisibilityPolicy.h" "371da2ea12fd68d16313b4326fc8b60f9bc71a09"
+assert_unchanged_blob "Source/Offline/YTMUNativeMiniPlayerVisibilityPolicy.m" "423872c0d3ad04644cca4423ff45c62f02dac522"
 assert_unchanged_blob "Source/Offline/YTMUOfflinePlaybackPolicy.m" "a7f6ceb610a3104810321f8cfe86da449cd3dda4"
 assert_unchanged_blob "Source/Offline/YTMUPlaybackCoordinatorPolicy.m" "8644aca7bbbcb04c87563dd2a5ff369d5d6d4a33"
 assert_unchanged_blob "Source/Offline/YTMUOfflineModels.h" "98871b06ace3b25b16c3301c5476fe6db2705162"

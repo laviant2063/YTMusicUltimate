@@ -39,6 +39,17 @@ xcrun clang \
 "$build_root/mini-player-swipe-policy-tests"
 
 xcrun clang \
+  -std=c11 \
+  -Wall -Wextra -Werror \
+  -x c \
+  "$repo_root/Source/Offline/YTMUNativeMiniPlayerVisibilityPolicy.m" \
+  "$repo_root/Tests/YTMUNativeMiniPlayerVisibilityPolicyTests.c" \
+  -I"$repo_root/Source/Offline" \
+  -o "$build_root/native-mini-player-visibility-policy-tests"
+
+"$build_root/native-mini-player-visibility-policy-tests"
+
+xcrun clang \
   -fobjc-arc \
   -Wall -Wextra -Werror \
   -framework Foundation \

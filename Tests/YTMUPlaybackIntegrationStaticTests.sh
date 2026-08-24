@@ -54,13 +54,39 @@ grep -Fq 'loadCurrentTrackAndPlayUnchecked' "$manager"
 grep -Fq 'YTMUPerformObjectiveCBlockSafely' "$adapter"
 grep -Fq 'if (self.miniPlayerSuppressed == suppressed) return;' "$adapter"
 grep -Fq 'requestNativeSessionEndFromMiniPlayerController:' "$adapter"
+grep -Fq 'prepareNativeMiniPlayerForPlaybackStart' "$adapter"
+grep -Fq 'collapseEmptyNativeMiniPlayerAfterConfirmedSessionEnd' "$adapter"
+grep -Fq 'applyNativeMiniPlayerVisibilityState' "$adapter"
+grep -Fq 'nativeEmptyMiniPlayerCollapsed' "$adapter"
+grep -Fq 'nativeSessionEndConfirmed' "$adapter"
+grep -Fq 'nativeMiniPlayerVisibilityGeneration' "$adapter"
 grep -Fq 'NSClassFromString(@"YTMWatchViewController")' "$adapter"
+grep -Fq 'NSClassFromString(@"YTMWatchPageLayoutControllerImpl")' "$adapter"
 grep -Fq 'NSSelectorFromString(@"resetAndHide")' "$adapter"
+grep -Fq 'NSSelectorFromString(@"dismiss")' "$adapter"
+grep -Fq 'NSSelectorFromString(@"currentLayout")' "$adapter"
+grep -Fq 'class_getInstanceVariable(watch.class, "_watchPageLayoutController")' "$adapter"
+grep -Fq 'ivar_getTypeEncoding' "$adapter"
 grep -Fq 'method_getTypeEncoding' "$adapter"
 grep -Fq '"v16@0:8"' "$adapter"
+grep -Fq '"q16@0:8"' "$adapter"
 grep -Fq 'void (*sendVoid)(id, SEL) = (void *)objc_msgSend;' "$adapter"
+grep -Fq 'long long (*sendInteger)(id, SEL) = (void *)objc_msgSend;' "$adapter"
+grep -Fq 'YTMUNativeMiniPlayerDismissedLayout' "$adapter"
+grep -Fq 'collapsed = currentLayout == YTMUNativeMiniPlayerDismissedLayout;' "$adapter"
+grep -Fq 'dispatch_async(dispatch_get_main_queue()' "$adapter"
+grep -Fq 'YTMUNativePlaybackWillStart' "$hooks"
+grep -Fq 'prepareNativeMiniPlayerForPlaybackStart' "$hooks"
 if grep -Fq 'performSelector:' "$adapter"; then
   echo "Private native teardown must use an ABI-typed objc_msgSend call" >&2
+  exit 1
+fi
+if grep -Fqi 'Nothing is playing' "$adapter" "$hooks"; then
+  echo "Native empty-shell handling must not depend on display text" >&2
+  exit 1
+fi
+if grep -Eq 'subviews\[[0-9]+\]|removeFromSuperview|removeFromParentViewController' "$adapter" "$hooks"; then
+  echo "Native empty-shell handling must use the verified layout API" >&2
   exit 1
 fi
 echo "Playback integration static tests passed"
