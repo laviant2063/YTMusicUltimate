@@ -27,17 +27,30 @@ assert_not_contains() {
   fi
 }
 
-# The dedicated YTMMiniPlayerViewController view is only a snapshot source. It
-# must contain the verified miniPlayerView, and only the transient snapshot may
-# be translated or faded during the gesture.
-assert_contains "$native_swipe" "YTMUResolveNativeMiniPlayerVisualRoot" \
-  "native mini-player visual root is not resolved semantically"
-assert_contains "$native_swipe" "[miniPlayerView isDescendantOfView:visualRoot]" \
-  "the snapshot root is not verified to own the native mini-player contents"
-assert_contains "$native_swipe" "snapshotViewAfterScreenUpdates:NO" \
-  "the complete native mini-player is not represented by one snapshot"
-assert_contains "$native_swipe" "[visualRootView snapshotViewAfterScreenUpdates:NO]" \
-  "the snapshot does not render the dedicated controller root"
+# YouTube Music 9.14.2 renders the native mini-player across the child
+# controller and YTMWatchView's container/gradient/shadow layers. The complete
+# visible card must therefore be captured from the composited window region,
+# not from YTMMiniPlayerViewController.view or its clipping immediate parent.
+assert_contains "$native_swipe" "YTMUResolveNativeMiniPlayerVisualContext" \
+  "the complete native mini-player visual context is not resolved semantically"
+assert_contains "$native_swipe" "NSClassFromString(@\"YTMWatchView\")" \
+  "the verified watch view class is not version guarded"
+assert_contains "$native_swipe" "_containerView" \
+  "the native black mini-player shell owner is not included"
+assert_contains "$native_swipe" "_gradientBackgroundView" \
+  "the native mini-player background layer is not included"
+assert_contains "$native_swipe" "_containerShadowView" \
+  "the native mini-player shadow/separator layer is not included"
+assert_contains "$native_swipe" "resizableSnapshotViewFromRect:cardFrame" \
+  "the complete composited card is not represented by one snapshot"
+assert_contains "$native_swipe" "animationWindow" \
+  "the unified snapshot does not use a non-clipping window overlay"
+assert_contains "$native_swipe" "coveredNativeViews" \
+  "the original shell and content are not covered atomically"
+assert_not_contains "$native_swipe" "[visualRootView snapshotViewAfterScreenUpdates:NO]" \
+  "the incomplete controller root is still used as the snapshot source"
+assert_not_contains "$native_swipe" "UIView *containerView = visualRootView.superview;" \
+  "the snapshot is still attached to the clipping immediate superview"
 assert_contains "$native_swipe" "animationSnapshot" \
   "the unified dismissal snapshot is missing"
 assert_contains "$native_swipe" "animationView.transform" \
@@ -58,8 +71,8 @@ fi
 # The original controller view remains in YouTube Music's hierarchy and is
 # merely covered while resetAndHide updates the hidden native layout. Playback
 # teardown stays inside the existing adapter boundary and is requested once.
-assert_contains "$native_swipe" "YTMUSetNativeMiniPlayerLayerOpacity(visualRootView, 0.0f)" \
-  "the original native layers can remain visible behind the snapshot"
+assert_contains "$native_swipe" "YTMUSetNativeMiniPlayerViewsLayerOpacity" \
+  "the original shell and content can remain visible behind the snapshot"
 assert_contains "$native_swipe" "finishCommittedDismissalForGeneration" \
   "the single-card finish animation is missing"
 assert_contains "$native_swipe" "collapseNativeMiniPlayerVisualShellAfterConfirmedSessionEnd" \
@@ -93,6 +106,16 @@ assert_contains "$native_adapter" 'strcmp(dismissEncoding, "v16@0:8")' \
   "the native dismiss selector ABI is not verified"
 assert_contains "$native_adapter" 'strcmp(currentLayoutEncoding, "q16@0:8")' \
   "the native currentLayout selector ABI is not verified"
+assert_contains "$native_adapter" "NSSelectorFromString(@\"switchToLayout:animated:\")" \
+  "the verified nonanimated layout-finalization command is missing"
+assert_contains "$native_adapter" 'strcmp(switchLayoutEncoding, "v28@0:8q16B24")' \
+  "the native nonanimated layout selector ABI is not verified"
+assert_contains "$native_adapter" "nativeMiniPlayerVisualShellIsGeometricallyCollapsed" \
+  "currentLayout alone is still treated as proof of visual collapse"
+assert_contains "$native_adapter" "presentationLayer" \
+  "an in-flight native collapse can be exposed before its presentation layer exits"
+assert_contains "$native_adapter" "CGRectIntersection" \
+  "the native shell's remaining visible height is not verified"
 assert_not_contains "$native_adapter" "Nothing is playing" \
   "empty-shell collapse depends on localized UI text"
 assert_not_contains "$native_swipe" "Nothing is playing" \
