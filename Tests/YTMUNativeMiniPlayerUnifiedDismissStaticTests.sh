@@ -87,6 +87,8 @@ assert_contains "$native_adapter" "NSSelectorFromString(@\"dismiss\")" \
   "the verified dismissed-layout command is missing"
 assert_contains "$native_adapter" "NSSelectorFromString(@\"currentLayout\")" \
   "the dismissed native layout is not confirmed"
+assert_not_contains "$native_adapter" "layoutController.class" \
+  "the id-typed private layout controller uses unsupported property syntax"
 assert_contains "$native_adapter" 'strcmp(dismissEncoding, "v16@0:8")' \
   "the native dismiss selector ABI is not verified"
 assert_contains "$native_adapter" 'strcmp(currentLayoutEncoding, "q16@0:8")' \

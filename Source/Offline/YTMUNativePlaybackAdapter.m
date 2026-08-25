@@ -412,8 +412,8 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
 
     SEL dismissSelector = NSSelectorFromString(@"dismiss");
     SEL currentLayoutSelector = NSSelectorFromString(@"currentLayout");
-    Method dismissMethod = class_getInstanceMethod(layoutController.class, dismissSelector);
-    Method currentLayoutMethod = class_getInstanceMethod(layoutController.class,
+    Method dismissMethod = class_getInstanceMethod([layoutController class], dismissSelector);
+    Method currentLayoutMethod = class_getInstanceMethod([layoutController class],
                                                           currentLayoutSelector);
     const char *dismissEncoding = dismissMethod == NULL
         ? NULL
