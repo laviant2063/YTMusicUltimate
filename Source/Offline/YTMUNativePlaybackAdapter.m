@@ -11,6 +11,23 @@
 // layout 6. This value and both method encodings are verified against the host
 // binary before the private layout command is used.
 static const long long YTMUNativeMiniPlayerDismissedLayout = 6;
+static const CGFloat YTMUNativeMiniPlayerCollapsedVisibleHeightTolerance = 0.5;
+
+static CGFloat YTMUNativeVisibleHeightForView(UIView *view,
+                                              UIWindow *window,
+                                              CGRect viewport,
+                                              BOOL usePresentationLayer) {
+    if (view == nil || window == nil || view.window != window) return 0.0;
+    CALayer *layer = usePresentationLayer
+        ? (CALayer *)view.layer.presentationLayer
+        : view.layer;
+    if (layer == nil) layer = view.layer;
+    CGRect frameInWindow = [layer convertRect:layer.bounds toLayer:window.layer];
+    CGRect visibleFrame = CGRectIntersection(frameInWindow, viewport);
+    return CGRectIsNull(visibleFrame) || CGRectIsEmpty(visibleFrame)
+        ? 0.0
+        : CGRectGetHeight(visibleFrame);
+}
 
 NSNotificationName const YTMUNativePlaybackWillStartNotification =
     @"YTMUNativePlaybackWillStartNotification";
@@ -412,21 +429,39 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
 
     SEL dismissSelector = NSSelectorFromString(@"dismiss");
     SEL currentLayoutSelector = NSSelectorFromString(@"currentLayout");
+    SEL switchLayoutSelector = NSSelectorFromString(@"switchToLayout:animated:");
+    SEL cancelAnimationSelector = NSSelectorFromString(@"cancelWatchViewAnimation");
     Method dismissMethod = class_getInstanceMethod([layoutController class], dismissSelector);
     Method currentLayoutMethod = class_getInstanceMethod([layoutController class],
                                                           currentLayoutSelector);
+    Method switchLayoutMethod = class_getInstanceMethod([layoutController class],
+                                                         switchLayoutSelector);
+    Method cancelAnimationMethod = class_getInstanceMethod([layoutController class],
+                                                            cancelAnimationSelector);
     const char *dismissEncoding = dismissMethod == NULL
         ? NULL
         : method_getTypeEncoding(dismissMethod);
     const char *currentLayoutEncoding = currentLayoutMethod == NULL
         ? NULL
         : method_getTypeEncoding(currentLayoutMethod);
+    const char *switchLayoutEncoding = switchLayoutMethod == NULL
+        ? NULL
+        : method_getTypeEncoding(switchLayoutMethod);
+    const char *cancelAnimationEncoding = cancelAnimationMethod == NULL
+        ? NULL
+        : method_getTypeEncoding(cancelAnimationMethod);
     if (![layoutController respondsToSelector:dismissSelector]
         || ![layoutController respondsToSelector:currentLayoutSelector]
+        || ![layoutController respondsToSelector:switchLayoutSelector]
+        || ![layoutController respondsToSelector:cancelAnimationSelector]
         || dismissEncoding == NULL
         || currentLayoutEncoding == NULL
+        || switchLayoutEncoding == NULL
+        || cancelAnimationEncoding == NULL
         || strcmp(dismissEncoding, "v16@0:8") != 0
-        || strcmp(currentLayoutEncoding, "q16@0:8") != 0) {
+        || strcmp(currentLayoutEncoding, "q16@0:8") != 0
+        || strcmp(switchLayoutEncoding, "v28@0:8q16B24") != 0
+        || strcmp(cancelAnimationEncoding, "v16@0:8") != 0) {
         if (error != NULL) {
             *error = [self nativeMiniPlayerLayoutErrorWithCode:13
                                                     description:@"This YouTube Music version has incompatible mini-player layout commands."];
@@ -436,6 +471,213 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
 
     if (error != NULL) *error = nil;
     return layoutController;
+}
+
+- (UIView *)nativeWatchViewWithError:(NSError **)error {
+    UIViewController *watchController = self.watchViewController;
+    Class watchControllerClass = NSClassFromString(@"YTMWatchViewController");
+    Class watchViewClass = NSClassFromString(@"YTMWatchView");
+    SEL watchViewSelector = NSSelectorFromString(@"watchView");
+    Method watchViewMethod = watchController == nil
+        ? NULL
+        : class_getInstanceMethod(watchController.class, watchViewSelector);
+    const char *watchViewEncoding = watchViewMethod == NULL
+        ? NULL
+        : method_getTypeEncoding(watchViewMethod);
+    if (watchController == nil
+        || watchControllerClass == Nil
+        || watchViewClass == Nil
+        || ![watchController isKindOfClass:watchControllerClass]
+        || ![watchController respondsToSelector:watchViewSelector]
+        || watchViewEncoding == NULL
+        || strcmp(watchViewEncoding, "@16@0:8") != 0) {
+        if (error != NULL) {
+            *error = [self nativeMiniPlayerLayoutErrorWithCode:17
+                                                    description:@"The YouTube Music watch view is unavailable."];
+        }
+        return nil;
+    }
+
+    __block id watchView = nil;
+    NSException *watchViewException = nil;
+    BOOL resolvedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        id (*sendObject)(id, SEL) = (void *)objc_msgSend;
+        watchView = sendObject(watchController, watchViewSelector);
+    }, &watchViewException);
+    if (!resolvedSafely || ![watchView isKindOfClass:watchViewClass]) {
+        if (error != NULL) {
+            *error = [self nativeMiniPlayerLayoutErrorWithCode:18
+                                                    description:watchViewException.reason
+                                                        ?: @"The YouTube Music watch view could not be resolved."];
+        }
+        return nil;
+    }
+    if (error != NULL) *error = nil;
+    return watchView;
+}
+
+- (NSArray<UIView *> *)nativeMiniPlayerVisualShellViewsForWatchView:(UIView *)watchView
+                                                              error:(NSError **)error {
+    Class gradientClass = NSClassFromString(@"YTMGradientBackgroundView");
+    if (watchView == nil || gradientClass == Nil) {
+        if (error != NULL) {
+            *error = [self nativeMiniPlayerLayoutErrorWithCode:19
+                                                    description:@"The native mini-player shell class is unavailable."];
+        }
+        return nil;
+    }
+
+    const char *ivarNames[] = {
+        "_containerView",
+        "_gradientBackgroundView",
+        "_containerShadowView",
+    };
+    const char *ivarEncodings[] = {
+        "@\"YTMGradientBackgroundView\"",
+        "@\"YTMGradientBackgroundView\"",
+        "@\"UIView\"",
+    };
+    NSMutableArray<UIView *> *shellViews = [NSMutableArray arrayWithCapacity:3];
+    __block BOOL resolvedAllViews = YES;
+    NSException *ivarException = nil;
+    BOOL resolvedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        for (NSUInteger index = 0; index < 3; index++) {
+            Ivar ivar = class_getInstanceVariable(watchView.class, ivarNames[index]);
+            const char *encoding = ivar == NULL ? NULL : ivar_getTypeEncoding(ivar);
+            if (ivar == NULL
+                || encoding == NULL
+                || strcmp(encoding, ivarEncodings[index]) != 0) {
+                resolvedAllViews = NO;
+                return;
+            }
+            id value = object_getIvar(watchView, ivar);
+            Class expectedClass = index < 2 ? gradientClass : UIView.class;
+            if (![value isKindOfClass:expectedClass]) {
+                resolvedAllViews = NO;
+                return;
+            }
+            [shellViews addObject:value];
+        }
+    }, &ivarException);
+    if (!resolvedSafely || !resolvedAllViews || shellViews.count != 3) {
+        if (error != NULL) {
+            *error = [self nativeMiniPlayerLayoutErrorWithCode:20
+                                                    description:ivarException.reason
+                                                        ?: @"The native mini-player shell views could not be resolved safely."];
+        }
+        return nil;
+    }
+    if (error != NULL) *error = nil;
+    return shellViews;
+}
+
+- (BOOL)nativeMiniPlayerVisualShellIsGeometricallyCollapsed:(NSError **)error {
+    NSError *watchViewError = nil;
+    UIView *watchView = [self nativeWatchViewWithError:&watchViewError];
+    if (watchView == nil) {
+        if (error != NULL) *error = watchViewError;
+        return NO;
+    }
+
+    SEL currentLayoutSelector = NSSelectorFromString(@"currentLayout");
+    SEL dismissedSelector = NSSelectorFromString(@"isDismissed");
+    Method currentLayoutMethod = class_getInstanceMethod(watchView.class,
+                                                          currentLayoutSelector);
+    Method dismissedMethod = class_getInstanceMethod(watchView.class, dismissedSelector);
+    const char *currentLayoutEncoding = currentLayoutMethod == NULL
+        ? NULL
+        : method_getTypeEncoding(currentLayoutMethod);
+    const char *dismissedEncoding = dismissedMethod == NULL
+        ? NULL
+        : method_getTypeEncoding(dismissedMethod);
+    if (![watchView respondsToSelector:currentLayoutSelector]
+        || ![watchView respondsToSelector:dismissedSelector]
+        || currentLayoutEncoding == NULL
+        || dismissedEncoding == NULL
+        || strcmp(currentLayoutEncoding, "q16@0:8") != 0
+        || strcmp(dismissedEncoding, "B16@0:8") != 0) {
+        if (error != NULL) {
+            *error = [self nativeMiniPlayerLayoutErrorWithCode:21
+                                                    description:@"This YouTube Music version has incompatible visual layout state APIs."];
+        }
+        return NO;
+    }
+
+    NSError *shellError = nil;
+    NSArray<UIView *> *shellViews =
+        [self nativeMiniPlayerVisualShellViewsForWatchView:watchView error:&shellError];
+    if (shellViews == nil) {
+        if (error != NULL) *error = shellError;
+        return NO;
+    }
+
+    __block BOOL dismissed = NO;
+    __block long long watchLayout = -1;
+    __block CGFloat maximumModelVisibleHeight = 0.0;
+    __block CGFloat maximumPresentationVisibleHeight = 0.0;
+    NSException *geometryException = nil;
+    BOOL inspectedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        [UIView performWithoutAnimation:^{
+            [watchView setNeedsLayout];
+            [watchView layoutIfNeeded];
+            [watchView.window layoutIfNeeded];
+        }];
+
+        BOOL (*sendBool)(id, SEL) = (void *)objc_msgSend;
+        long long (*sendInteger)(id, SEL) = (void *)objc_msgSend;
+        dismissed = sendBool(watchView, dismissedSelector);
+        watchLayout = sendInteger(watchView, currentLayoutSelector);
+
+        UIWindow *window = watchView.window;
+        if (window == nil) return;
+        CGRect viewport = window.bounds;
+        SEL pivotSelector = NSSelectorFromString(@"pivotBarView");
+        Method pivotMethod = class_getInstanceMethod(watchView.class, pivotSelector);
+        const char *pivotEncoding = pivotMethod == NULL
+            ? NULL
+            : method_getTypeEncoding(pivotMethod);
+        if ([watchView respondsToSelector:pivotSelector]
+            && pivotEncoding != NULL
+            && strcmp(pivotEncoding, "@16@0:8") == 0) {
+            id (*sendObject)(id, SEL) = (void *)objc_msgSend;
+            UIView *pivotBarView = sendObject(watchView, pivotSelector);
+            if ([pivotBarView isKindOfClass:UIView.class]
+                && pivotBarView.window == window
+                && !pivotBarView.hidden) {
+                CGRect pivotFrame = [pivotBarView convertRect:pivotBarView.bounds toView:window];
+                CGFloat viewportMaximumY = MIN(CGRectGetMaxY(viewport),
+                                               CGRectGetMinY(pivotFrame));
+                viewport.size.height = MAX(0.0,
+                    viewportMaximumY - CGRectGetMinY(viewport));
+            }
+        }
+
+        for (UIView *shellView in shellViews) {
+            maximumModelVisibleHeight = MAX(
+                maximumModelVisibleHeight,
+                YTMUNativeVisibleHeightForView(shellView, window, viewport, NO));
+            maximumPresentationVisibleHeight = MAX(
+                maximumPresentationVisibleHeight,
+                YTMUNativeVisibleHeightForView(shellView, window, viewport, YES));
+        }
+    }, &geometryException);
+    BOOL geometricallyCollapsed = inspectedSafely
+        && dismissed
+        && watchLayout == YTMUNativeMiniPlayerDismissedLayout
+        && maximumModelVisibleHeight <= YTMUNativeMiniPlayerCollapsedVisibleHeightTolerance
+        && maximumPresentationVisibleHeight
+            <= YTMUNativeMiniPlayerCollapsedVisibleHeightTolerance;
+    if (!geometricallyCollapsed && error != NULL) {
+        NSString *description = geometryException.reason
+            ?: [NSString stringWithFormat:
+                @"The native mini-player still occupies visible layout space (model %.2f, presentation %.2f).",
+                maximumModelVisibleHeight,
+                maximumPresentationVisibleHeight];
+        *error = [self nativeMiniPlayerLayoutErrorWithCode:22 description:description];
+    } else if (error != NULL) {
+        *error = nil;
+    }
+    return geometricallyCollapsed;
 }
 
 - (BOOL)collapseNativeMiniPlayerVisualShellAfterConfirmedSessionEnd:(NSError **)error {
@@ -458,6 +700,7 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
         }
 
         NSUInteger generation = self.nativeMiniPlayerLayoutGeneration;
+        __block BOOL dismissedLayoutSelected = NO;
         NSException *layoutException = nil;
         BOOL invokedSafely = YTMUPerformObjectiveCBlockSafely(^{
             SEL currentLayoutSelector = NSSelectorFromString(@"currentLayout");
@@ -467,15 +710,39 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
                 SEL dismissSelector = NSSelectorFromString(@"dismiss");
                 void (*sendVoid)(id, SEL) = (void *)objc_msgSend;
                 sendVoid(layoutController, dismissSelector);
-                currentLayout = sendInteger(layoutController, currentLayoutSelector);
             }
-            collapsed = currentLayout == YTMUNativeMiniPlayerDismissedLayout;
+
+            // resetAndHide/dismiss may have installed a native property animator.
+            // The complete card snapshot still covers the original hierarchy, so
+            // finalize that hidden layout synchronously and without exposing a
+            // second user-visible animation.
+            SEL cancelAnimationSelector = NSSelectorFromString(@"cancelWatchViewAnimation");
+            SEL switchLayoutSelector = NSSelectorFromString(@"switchToLayout:animated:");
+            void (*sendVoid)(id, SEL) = (void *)objc_msgSend;
+            void (*sendLayout)(id, SEL, long long, BOOL) = (void *)objc_msgSend;
+            sendVoid(layoutController, cancelAnimationSelector);
+            [UIView performWithoutAnimation:^{
+                sendLayout(layoutController,
+                           switchLayoutSelector,
+                           YTMUNativeMiniPlayerDismissedLayout,
+                           NO);
+            }];
+            currentLayout = sendInteger(layoutController, currentLayoutSelector);
+            dismissedLayoutSelected =
+                currentLayout == YTMUNativeMiniPlayerDismissedLayout;
         }, &layoutException);
-        if (!invokedSafely || !collapsed) {
-            collapsed = NO;
+        if (!invokedSafely || !dismissedLayoutSelected) {
             collapseError = [self nativeMiniPlayerLayoutErrorWithCode:15
                                                            description:layoutException.reason
                                                                ?: @"The YouTube Music mini-player layout did not dismiss."];
+            return;
+        }
+
+        NSError *geometryError = nil;
+        collapsed = [self nativeMiniPlayerVisualShellIsGeometricallyCollapsed:
+            &geometryError];
+        if (!collapsed) {
+            collapseError = geometryError;
             return;
         }
 

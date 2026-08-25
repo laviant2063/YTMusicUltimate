@@ -3,6 +3,9 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
+#include <math.h>
+#include <string.h>
+
 #import "YTMUMiniPlayerSwipePolicy.h"
 #import "YTMUNativePlaybackAdapter.h"
 #import "YTMUObjectiveCExceptionGuard.h"
@@ -13,15 +16,233 @@ static const NSTimeInterval YTMUNativeSwipeRestoreDuration = 0.22;
 static const NSTimeInterval YTMUNativeSwipeCommitDuration = 0.18;
 static const CGFloat YTMUNativeSwipeMaximumFade = 0.35;
 static const CGFloat YTMUNativeSwipeFinishPadding = 12.0;
+static const CGFloat YTMUNativeVisualGeometryTolerance = 1.0;
 static char YTMUNativeMiniPlayerSwipeAssociationKey;
 
 static NSString *YTMUNativeSwipeLocalized(NSString *key, NSString *fallback) {
     return [NSBundle.ytmu_defaultBundle localizedStringForKey:key value:fallback table:nil];
 }
 
-static void YTMUSetNativeMiniPlayerLayerOpacity(UIView *view, float opacity) {
-    if (view == nil) return;
-    [UIView performWithoutAnimation:^{ view.layer.opacity = opacity; }];
+static void YTMUSetNativeMiniPlayerViewsLayerOpacity(NSArray<UIView *> *views,
+                                                     float opacity) {
+    [UIView performWithoutAnimation:^{
+        for (UIView *view in views) {
+            view.layer.opacity = opacity;
+        }
+    }];
+}
+
+static BOOL YTMURectsEqualWithinTolerance(CGRect lhs, CGRect rhs) {
+    return fabs(CGRectGetMinX(lhs) - CGRectGetMinX(rhs)) <= YTMUNativeVisualGeometryTolerance
+        && fabs(CGRectGetMinY(lhs) - CGRectGetMinY(rhs)) <= YTMUNativeVisualGeometryTolerance
+        && fabs(CGRectGetWidth(lhs) - CGRectGetWidth(rhs)) <= YTMUNativeVisualGeometryTolerance
+        && fabs(CGRectGetHeight(lhs) - CGRectGetHeight(rhs)) <= YTMUNativeVisualGeometryTolerance;
+}
+
+static BOOL YTMURectIsFiniteAndVisible(CGRect rect) {
+    return !CGRectIsNull(rect)
+        && !CGRectIsInfinite(rect)
+        && !CGRectIsEmpty(rect)
+        && isfinite(CGRectGetMinX(rect))
+        && isfinite(CGRectGetMinY(rect))
+        && isfinite(CGRectGetWidth(rect))
+        && isfinite(CGRectGetHeight(rect));
+}
+
+static BOOL YTMUMethodHasEncoding(id object, SEL selector, const char *expectedEncoding) {
+    if (object == nil || selector == NULL || ![object respondsToSelector:selector]) return NO;
+    Method method = class_getInstanceMethod([object class], selector);
+    const char *encoding = method == NULL ? NULL : method_getTypeEncoding(method);
+    return encoding != NULL && strcmp(encoding, expectedEncoding) == 0;
+}
+
+static id YTMUObjectReturnedByVerifiedSelector(id object,
+                                                NSString *selectorName,
+                                                Class expectedClass) {
+    SEL selector = NSSelectorFromString(selectorName);
+    if (!YTMUMethodHasEncoding(object, selector, "@16@0:8")) return nil;
+    __block id resolvedObject = nil;
+    BOOL resolvedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        id (*sendObject)(id, SEL) = (void *)objc_msgSend;
+        resolvedObject = sendObject(object, selector);
+    }, NULL);
+    return resolvedSafely
+        && resolvedObject != nil
+        && (expectedClass == Nil || [resolvedObject isKindOfClass:expectedClass])
+        ? resolvedObject
+        : nil;
+}
+
+static UIView *YTMUViewFromVerifiedIvar(id object,
+                                       const char *ivarName,
+                                       const char *expectedEncoding,
+                                       Class expectedClass) {
+    if (object == nil || ivarName == NULL || expectedEncoding == NULL) return nil;
+    Ivar ivar = class_getInstanceVariable([object class], ivarName);
+    const char *encoding = ivar == NULL ? NULL : ivar_getTypeEncoding(ivar);
+    if (ivar == NULL || encoding == NULL || strcmp(encoding, expectedEncoding) != 0) {
+        return nil;
+    }
+    __block id resolvedView = nil;
+    BOOL resolvedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        resolvedView = object_getIvar(object, ivar);
+    }, NULL);
+    return resolvedSafely
+        && [resolvedView isKindOfClass:UIView.class]
+        && (expectedClass == Nil || [resolvedView isKindOfClass:expectedClass])
+        ? resolvedView
+        : nil;
+}
+
+static void YTMUAppendUniqueView(NSMutableArray<UIView *> *views, UIView *view) {
+    if (view != nil && ![views containsObject:view]) [views addObject:view];
+}
+
+@interface YTMUNativeMiniPlayerVisualContext : NSObject
+@property (nonatomic, weak) UIWindow *window;
+@property (nonatomic, weak) UIView *watchView;
+@property (nonatomic, weak) UIView *controllerRootView;
+@property (nonatomic, weak) UIView *miniPlayerView;
+@property (nonatomic, weak) UIView *containerView;
+@property (nonatomic, weak) UIView *pivotBarView;
+@property (nonatomic, assign) CGRect cardFrameInWindow;
+@property (nonatomic, copy) NSArray<UIView *> *visualParticipants;
+@end
+
+@implementation YTMUNativeMiniPlayerVisualContext
+@end
+
+static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualContext(
+    UIViewController *controller,
+    UIView *miniPlayerView) {
+    Class miniPlayerControllerClass = NSClassFromString(@"YTMMiniPlayerViewController");
+    Class watchControllerClass = NSClassFromString(@"YTMWatchViewController");
+    Class watchViewClass = NSClassFromString(@"YTMWatchView");
+    Class gradientClass = NSClassFromString(@"YTMGradientBackgroundView");
+    if (controller == nil
+        || miniPlayerView == nil
+        || miniPlayerControllerClass == Nil
+        || watchControllerClass == Nil
+        || watchViewClass == Nil
+        || gradientClass == Nil
+        || ![controller isKindOfClass:miniPlayerControllerClass]
+        || !controller.isViewLoaded) {
+        return nil;
+    }
+
+    UIView *controllerRootView = controller.view;
+    if (controllerRootView == nil
+        || (miniPlayerView != controllerRootView
+            && ![miniPlayerView isDescendantOfView:controllerRootView])) {
+        return nil;
+    }
+
+    id watchController = YTMUObjectReturnedByVerifiedSelector(
+        controller, @"parentResponder", watchControllerClass);
+    UIView *watchView = YTMUObjectReturnedByVerifiedSelector(
+        watchController, @"watchView", watchViewClass);
+    UIView *watchMiniPlayerView = YTMUObjectReturnedByVerifiedSelector(
+        watchView, @"miniPlayerView", NSClassFromString(@"YTMMiniPlayerView"));
+    if (watchController == nil || watchView == nil || watchMiniPlayerView != miniPlayerView) {
+        return nil;
+    }
+
+    UIWindow *window = miniPlayerView.window;
+    if (window == nil
+        || controllerRootView.window != window
+        || watchView.window != window
+        || [controllerRootView isKindOfClass:UITabBar.class]) {
+        return nil;
+    }
+
+    UIView *containerView = YTMUViewFromVerifiedIvar(
+        watchView, "_containerView", "@\"YTMGradientBackgroundView\"", gradientClass);
+    UIView *gradientBackgroundView = YTMUViewFromVerifiedIvar(
+        watchView, "_gradientBackgroundView", "@\"YTMGradientBackgroundView\"", gradientClass);
+    UIView *containerShadowView = YTMUViewFromVerifiedIvar(
+        watchView, "_containerShadowView", "@\"UIView\"", UIView.class);
+    UIView *frostedGlassView = YTMUViewFromVerifiedIvar(
+        watchView, "_frostedGlassView", "@\"UIView\"", UIView.class);
+    UIView *pivotBarView = YTMUObjectReturnedByVerifiedSelector(
+        watchView, @"pivotBarView", NSClassFromString(@"YTPivotBarView"));
+    if (containerView == nil || gradientBackgroundView == nil || containerShadowView == nil) {
+        return nil;
+    }
+
+    CGRect miniPlayerFrame = [miniPlayerView convertRect:miniPlayerView.bounds toView:window];
+    CGRect controllerFrame = [controllerRootView convertRect:controllerRootView.bounds toView:window];
+    CGRect containerFrame = [containerView convertRect:containerView.bounds toView:window];
+    CGRect gradientFrame = [gradientBackgroundView convertRect:gradientBackgroundView.bounds
+                                                         toView:window];
+    CGRect shadowFrame = [containerShadowView convertRect:containerShadowView.bounds toView:window];
+    if (!YTMURectIsFiniteAndVisible(miniPlayerFrame)
+        || !YTMURectIsFiniteAndVisible(controllerFrame)
+        || !YTMURectIsFiniteAndVisible(containerFrame)
+        || !YTMURectIsFiniteAndVisible(gradientFrame)
+        || !YTMURectIsFiniteAndVisible(shadowFrame)
+        || CGRectIsNull(CGRectIntersection(containerFrame, miniPlayerFrame))) {
+        return nil;
+    }
+
+    CGRect cardFrame = CGRectUnion(containerFrame, gradientFrame);
+    cardFrame = CGRectUnion(cardFrame, shadowFrame);
+    cardFrame = CGRectUnion(cardFrame, miniPlayerFrame);
+    cardFrame = CGRectUnion(cardFrame, controllerFrame);
+    BOOL includeFrostedGlassView = NO;
+    if (frostedGlassView != nil && frostedGlassView.window == window && !frostedGlassView.hidden) {
+        CGRect frostedFrame = [frostedGlassView convertRect:frostedGlassView.bounds toView:window];
+        if (YTMURectIsFiniteAndVisible(frostedFrame)
+            && !CGRectIsNull(CGRectIntersection(frostedFrame, containerFrame))) {
+            cardFrame = CGRectUnion(cardFrame, frostedFrame);
+            includeFrostedGlassView = YES;
+        }
+    }
+    cardFrame = CGRectIntersection(cardFrame, window.bounds);
+    if (!YTMURectIsFiniteAndVisible(cardFrame)) return nil;
+
+    if (pivotBarView != nil && pivotBarView.window == window && !pivotBarView.hidden) {
+        CGRect pivotFrame = [pivotBarView convertRect:pivotBarView.bounds toView:window];
+        if (YTMURectIsFiniteAndVisible(pivotFrame)
+            && CGRectGetMinY(pivotFrame) < CGRectGetMaxY(cardFrame)
+                - YTMUNativeVisualGeometryTolerance) {
+            return nil;
+        }
+    }
+
+    NSMutableArray<UIView *> *participants = [NSMutableArray array];
+    YTMUAppendUniqueView(participants, containerShadowView);
+    YTMUAppendUniqueView(participants, containerView);
+    YTMUAppendUniqueView(participants, gradientBackgroundView);
+    if (includeFrostedGlassView) YTMUAppendUniqueView(participants, frostedGlassView);
+    YTMUAppendUniqueView(participants, controllerRootView);
+    YTMUAppendUniqueView(participants, miniPlayerView);
+    for (UIView *participant in participants) {
+        if (participant == window || participant == watchView || participant == pivotBarView
+            || participant.window != window) {
+            return nil;
+        }
+        CGRect participantFrame = [participant convertRect:participant.bounds toView:window];
+        CGRect visibleParticipantFrame = CGRectIntersection(participantFrame, window.bounds);
+        if (YTMURectIsFiniteAndVisible(visibleParticipantFrame)
+            && !CGRectContainsRect(CGRectInset(cardFrame,
+                                               -YTMUNativeVisualGeometryTolerance,
+                                               -YTMUNativeVisualGeometryTolerance),
+                                   visibleParticipantFrame)) {
+            return nil;
+        }
+    }
+
+    YTMUNativeMiniPlayerVisualContext *context =
+        [[YTMUNativeMiniPlayerVisualContext alloc] init];
+    context.window = window;
+    context.watchView = watchView;
+    context.controllerRootView = controllerRootView;
+    context.miniPlayerView = miniPlayerView;
+    context.containerView = containerView;
+    context.pivotBarView = pivotBarView;
+    context.cardFrameInWindow = cardFrame;
+    context.visualParticipants = participants;
+    return context;
 }
 
 @interface YTMUNativeMiniPlayerSwipeHandler : NSObject <UIGestureRecognizerDelegate>
@@ -29,8 +250,11 @@ static void YTMUSetNativeMiniPlayerLayerOpacity(UIView *view, float opacity) {
 @property (nonatomic, weak) UIView *miniPlayerView;
 @property (nonatomic, weak) UIView *visualRootView;
 @property (nonatomic, weak) UIPanGestureRecognizer *panGesture;
+@property (nonatomic, weak) UIWindow *animationWindow;
 @property (nonatomic, strong) UIView *animationSnapshot;
 @property (nonatomic, strong) UIView *interactionBlocker;
+@property (nonatomic, copy) NSArray<UIView *> *coveredNativeViews;
+@property (nonatomic, copy) NSArray<NSNumber *> *coveredNativeViewLayerOpacities;
 @property (nonatomic, assign) CGAffineTransform animationOriginalTransform;
 @property (nonatomic, assign) CGFloat animationOriginalAlpha;
 @property (nonatomic, assign) BOOL visualRootOriginalHidden;
@@ -39,6 +263,8 @@ static void YTMUSetNativeMiniPlayerLayerOpacity(UIView *view, float opacity) {
 @property (nonatomic, assign) BOOL visualRootOriginalInteractionEnabled;
 @property (nonatomic, assign) float visualRootOriginalLayerOpacity;
 @property (nonatomic, assign) CGRect visualRootBoundsAtSwipeStart;
+@property (nonatomic, assign) CGRect animationWindowBoundsAtSwipeStart;
+@property (nonatomic, assign) CGRect animationCardFrameInWindow;
 @property (nonatomic, assign) BOOL swipeInProgress;
 @property (nonatomic, assign) BOOL swipeRestoring;
 @property (nonatomic, assign) BOOL swipeDismissCommitted;
@@ -56,6 +282,8 @@ static void YTMUSetNativeMiniPlayerLayerOpacity(UIView *view, float opacity) {
 - (BOOL)nativeSwipeCanContinue;
 - (BOOL)unifiedAnimationGeometryIsCurrent;
 - (BOOL)beginUnifiedSwipeAnimation;
+- (void)coverNativeViews:(NSArray<UIView *> *)views;
+- (void)restoreCoveredNativeViews;
 - (void)discardAnimationSnapshot;
 - (void)restoreVisualRootIncludingNativeState:(BOOL)restoreNativeState;
 - (void)restoreSwipeAnimated:(BOOL)animated;
@@ -155,6 +383,7 @@ static void YTMUSetNativeMiniPlayerLayerOpacity(UIView *view, float opacity) {
         [self restoreSwipeAnimated:NO];
     }
     self.swipeGeneration++;
+    [self restoreCoveredNativeViews];
     [self discardAnimationSnapshot];
     [self restoreVisualRootIncludingNativeState:NO];
     if (self.interactionDisabledAfterFailedCollapse) {
@@ -194,10 +423,21 @@ static void YTMUSetNativeMiniPlayerLayerOpacity(UIView *view, float opacity) {
 - (BOOL)unifiedAnimationGeometryIsCurrent {
     UIView *visualRootView = self.visualRootView;
     UIView *animationView = self.animationSnapshot;
+    UIWindow *animationWindow = self.animationWindow;
+    YTMUNativeMiniPlayerVisualContext *context =
+        YTMUResolveNativeMiniPlayerVisualContext(self.miniPlayerController,
+                                                 self.miniPlayerView);
     return visualRootView != nil
         && animationView != nil
-        && animationView.superview == visualRootView.superview
-        && CGRectEqualToRect(visualRootView.bounds, self.visualRootBoundsAtSwipeStart);
+        && animationWindow != nil
+        && context != nil
+        && context.window == animationWindow
+        && animationView.superview == animationWindow
+        && CGRectEqualToRect(visualRootView.bounds, self.visualRootBoundsAtSwipeStart)
+        && CGRectEqualToRect(animationWindow.bounds,
+                             self.animationWindowBoundsAtSwipeStart)
+        && YTMURectsEqualWithinTolerance(context.cardFrameInWindow,
+                                         self.animationCardFrameInWindow);
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
@@ -244,15 +484,22 @@ static void YTMUSetNativeMiniPlayerLayerOpacity(UIView *view, float opacity) {
 - (BOOL)beginUnifiedSwipeAnimation {
     UIView *miniPlayerView = self.miniPlayerView;
     UIView *visualRootView = self.visualRootView;
-    UIView *containerView = visualRootView.superview;
+    YTMUNativeMiniPlayerVisualContext *context =
+        YTMUResolveNativeMiniPlayerVisualContext(self.miniPlayerController,
+                                                 miniPlayerView);
+    UIWindow *window = context.window;
+    CGRect cardFrame = context.cardFrameInWindow;
     if (miniPlayerView == nil
         || visualRootView == nil
-        || containerView == nil
+        || context == nil
+        || window == nil
+        || !YTMURectIsFiniteAndVisible(cardFrame)
         || (miniPlayerView != visualRootView
             && ![miniPlayerView isDescendantOfView:visualRootView])) {
         return NO;
     }
 
+    [self restoreCoveredNativeViews];
     [self discardAnimationSnapshot];
     self.visualRootOriginalHidden = visualRootView.hidden;
     self.visualRootOriginalAlpha = visualRootView.alpha;
@@ -260,27 +507,60 @@ static void YTMUSetNativeMiniPlayerLayerOpacity(UIView *view, float opacity) {
     self.visualRootOriginalInteractionEnabled = visualRootView.userInteractionEnabled;
     self.visualRootOriginalLayerOpacity = visualRootView.layer.opacity;
     self.visualRootBoundsAtSwipeStart = visualRootView.bounds;
+    self.animationWindowBoundsAtSwipeStart = window.bounds;
+    self.animationCardFrameInWindow = cardFrame;
 
-    UIView *snapshot = [visualRootView snapshotViewAfterScreenUpdates:NO];
+    [window layoutIfNeeded];
+    UIView *snapshot = [window resizableSnapshotViewFromRect:cardFrame
+                                         afterScreenUpdates:NO
+                                              withCapInsets:UIEdgeInsetsZero];
     if (snapshot == nil) return NO;
-    snapshot.frame = [visualRootView convertRect:visualRootView.bounds toView:containerView];
+    snapshot.frame = cardFrame;
     snapshot.userInteractionEnabled = NO;
     snapshot.isAccessibilityElement = NO;
     snapshot.accessibilityElementsHidden = YES;
+    snapshot.clipsToBounds = NO;
+    snapshot.layer.masksToBounds = NO;
     UIView *interactionBlocker = [[UIView alloc] initWithFrame:snapshot.frame];
     interactionBlocker.backgroundColor = UIColor.clearColor;
     interactionBlocker.userInteractionEnabled = YES;
     interactionBlocker.isAccessibilityElement = NO;
     interactionBlocker.accessibilityElementsHidden = YES;
-    [containerView insertSubview:interactionBlocker aboveSubview:visualRootView];
-    [containerView insertSubview:snapshot aboveSubview:interactionBlocker];
+    [window addSubview:interactionBlocker];
+    [window addSubview:snapshot];
 
+    self.animationWindow = window;
     self.animationSnapshot = snapshot;
     self.interactionBlocker = interactionBlocker;
     self.animationOriginalTransform = snapshot.transform;
     self.animationOriginalAlpha = snapshot.alpha;
-    YTMUSetNativeMiniPlayerLayerOpacity(visualRootView, 0.0f);
+    [self coverNativeViews:context.visualParticipants];
     return YES;
+}
+
+- (void)coverNativeViews:(NSArray<UIView *> *)views {
+    if (views.count == 0) return;
+    [self restoreCoveredNativeViews];
+    NSMutableArray<NSNumber *> *opacities = [NSMutableArray arrayWithCapacity:views.count];
+    for (UIView *view in views) {
+        [opacities addObject:@(view.layer.opacity)];
+    }
+    self.coveredNativeViews = [views copy];
+    self.coveredNativeViewLayerOpacities = opacities;
+    YTMUSetNativeMiniPlayerViewsLayerOpacity(self.coveredNativeViews, 0.0f);
+}
+
+- (void)restoreCoveredNativeViews {
+    NSArray<UIView *> *views = self.coveredNativeViews;
+    NSArray<NSNumber *> *opacities = self.coveredNativeViewLayerOpacities;
+    self.coveredNativeViews = nil;
+    self.coveredNativeViewLayerOpacities = nil;
+    NSUInteger count = MIN(views.count, opacities.count);
+    [UIView performWithoutAnimation:^{
+        for (NSUInteger index = 0; index < count; index++) {
+            views[index].layer.opacity = opacities[index].floatValue;
+        }
+    }];
 }
 
 - (void)discardAnimationSnapshot {
@@ -288,6 +568,9 @@ static void YTMUSetNativeMiniPlayerLayerOpacity(UIView *view, float opacity) {
     UIView *interactionBlocker = self.interactionBlocker;
     self.animationSnapshot = nil;
     self.interactionBlocker = nil;
+    self.animationWindow = nil;
+    self.animationWindowBoundsAtSwipeStart = CGRectZero;
+    self.animationCardFrameInWindow = CGRectZero;
     if (snapshot != nil) {
         [snapshot.layer removeAllAnimations];
         // Only the transient view created by this handler is removed. Native
@@ -311,9 +594,14 @@ static void YTMUSetNativeMiniPlayerLayerOpacity(UIView *view, float opacity) {
         && (self.visualRootCoveredAfterConfirmedSessionEnd
             || YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerVisualShellCollapsed)
         && YTMUPlaybackCoordinator.sharedCoordinator.owner != YTMUPlaybackOwnerNative;
-    YTMUSetNativeMiniPlayerLayerOpacity(
-        visualRootView,
-        keepEndedShellCovered ? 0.0f : self.visualRootOriginalLayerOpacity);
+    if (keepEndedShellCovered) {
+        YTMUSetNativeMiniPlayerViewsLayerOpacity(self.coveredNativeViews, 0.0f);
+    } else {
+        [self restoreCoveredNativeViews];
+        [UIView performWithoutAnimation:^{
+            visualRootView.layer.opacity = self.visualRootOriginalLayerOpacity;
+        }];
+    }
 }
 
 - (void)restoreSwipeAnimated:(BOOL)animated {
@@ -445,8 +733,16 @@ static void YTMUSetNativeMiniPlayerLayerOpacity(UIView *view, float opacity) {
     NSError *collapseError = nil;
     BOOL collapsed = [YTMUNativePlaybackAdapter.sharedAdapter
         collapseNativeMiniPlayerVisualShellAfterConfirmedSessionEnd:&collapseError];
-    self.visualRootCoveredAfterConfirmedSessionEnd = YES;
-    if (!collapsed) {
+    self.visualRootCoveredAfterConfirmedSessionEnd = !collapsed;
+    if (collapsed) {
+        // The native model and presentation layers are both outside the visible
+        // mini-player viewport now. Restoring their original opacity cannot
+        // expose a second animation and leaves the next native session clean.
+        [self restoreCoveredNativeViews];
+        self.visualRootView.userInteractionEnabled =
+            self.visualRootOriginalInteractionEnabled;
+        self.interactionDisabledAfterFailedCollapse = NO;
+    } else {
         // Playback is already confirmed stopped. Keep the original shell
         // visually covered if the version-guarded layout command fails rather
         // than revealing a misleading empty player.
@@ -647,7 +943,7 @@ void YTMUInstallNativeMiniPlayerSwipeIfNeeded(UIViewController *miniPlayerContro
         && [existing isAttachedToMiniPlayerView:miniPlayerView]) {
         if (YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerVisualShellCollapsed
             && YTMUPlaybackCoordinator.sharedCoordinator.owner == YTMUPlaybackOwnerNone) {
-            YTMUSetNativeMiniPlayerLayerOpacity(visualRootView, 0.0f);
+            YTMUSetNativeMiniPlayerViewsLayerOpacity(@[visualRootView], 0.0f);
         }
         [existing prepareForPresentation];
         return;
@@ -661,7 +957,7 @@ void YTMUInstallNativeMiniPlayerSwipeIfNeeded(UIViewController *miniPlayerContro
                  visualRootView:visualRootView];
     if (YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerVisualShellCollapsed
         && YTMUPlaybackCoordinator.sharedCoordinator.owner == YTMUPlaybackOwnerNone) {
-        YTMUSetNativeMiniPlayerLayerOpacity(visualRootView, 0.0f);
+        YTMUSetNativeMiniPlayerViewsLayerOpacity(@[visualRootView], 0.0f);
     }
     objc_setAssociatedObject(miniPlayerController,
                              &YTMUNativeMiniPlayerSwipeAssociationKey,
