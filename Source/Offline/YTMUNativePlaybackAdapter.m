@@ -527,20 +527,20 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
         return nil;
     }
 
-    const char *ivarNames[] = {
-        "_containerView",
-        "_gradientBackgroundView",
-        "_containerShadowView",
-    };
-    const char *ivarEncodings[] = {
-        "@\"YTMGradientBackgroundView\"",
-        "@\"YTMGradientBackgroundView\"",
-        "@\"UIView\"",
-    };
     NSMutableArray<UIView *> *shellViews = [NSMutableArray arrayWithCapacity:3];
     __block BOOL resolvedAllViews = YES;
     NSException *ivarException = nil;
     BOOL resolvedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        const char *ivarNames[] = {
+            "_containerView",
+            "_gradientBackgroundView",
+            "_containerShadowView",
+        };
+        const char *ivarEncodings[] = {
+            "@\"YTMGradientBackgroundView\"",
+            "@\"YTMGradientBackgroundView\"",
+            "@\"UIView\"",
+        };
         for (NSUInteger index = 0; index < 3; index++) {
             Ivar ivar = class_getInstanceVariable(watchView.class, ivarNames[index]);
             const char *encoding = ivar == NULL ? NULL : ivar_getTypeEncoding(ivar);
