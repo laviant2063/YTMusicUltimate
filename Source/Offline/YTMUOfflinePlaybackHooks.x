@@ -5,9 +5,14 @@
 #import "YTMUNativePlaybackAdapter.h"
 #import "YTMUPlaybackCoordinator.h"
 
+static void YTMUNativePlaybackWillStart(void) {
+    [YTMUNativePlaybackAdapter.sharedAdapter prepareNativeMiniPlayerForPlaybackStart];
+    [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+}
+
 static void YTMUPrepareForNativePlayback(UIViewController *controller) {
     [YTMUNativePlaybackAdapter.sharedAdapter registerPlayerViewController:controller];
-    [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    YTMUNativePlaybackWillStart();
 }
 
 %group YTMUPlayerViewControllerHooks
@@ -90,39 +95,39 @@ static void YTMUPrepareForNativePlayback(UIViewController *controller) {
 }
 
 - (long long)handlePlayCommand:(id)command {
-    [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    YTMUNativePlaybackWillStart();
     return %orig(command);
 }
 
 - (long long)handleTogglePlayPauseCommand:(id)command {
     if (!YTMUNativePlaybackAdapter.sharedAdapter.nativePlaybackAudible) {
-        [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+        YTMUNativePlaybackWillStart();
     }
     return %orig(command);
 }
 
 - (void)didTapPlayButton {
-    [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    YTMUNativePlaybackWillStart();
     %orig;
 }
 
 - (void)watchViewDidTapPlayButton:(id)view {
-    [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    YTMUNativePlaybackWillStart();
     %orig(view);
 }
 
 - (void)loadWithModel:(id)model fromView:(id)view expand:(BOOL)expand startPlayback:(BOOL)startPlayback {
-    if (startPlayback) [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    if (startPlayback) YTMUNativePlaybackWillStart();
     %orig(model, view, expand, startPlayback);
 }
 
 - (void)loadWithModel:(id)model fromView:(id)view pageLayout:(long long)layout startPlayback:(BOOL)startPlayback {
-    if (startPlayback) [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    if (startPlayback) YTMUNativePlaybackWillStart();
     %orig(model, view, layout, startPlayback);
 }
 
 - (void)loadWithModel:(id)model startPlayback:(BOOL)startPlayback {
-    if (startPlayback) [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackWillStart];
+    if (startPlayback) YTMUNativePlaybackWillStart();
     %orig(model, startPlayback);
 }
 

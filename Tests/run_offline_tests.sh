@@ -75,3 +75,4 @@ xcrun clang \
 
 bash "$repo_root/Tests/YTMUPlaybackIntegrationStaticTests.sh"
 bash "$repo_root/Tests/YTMUOfflinePlayerUIStaticTests.sh"
+bash "$repo_root/Tests/YTMUNativeMiniPlayerUnifiedDismissStaticTests.sh"

@@ -200,12 +200,13 @@ assert_before "$player_menu" "CURRENT_QUEUE" "OFFLINE_END_PLAYBACK" \
   "current queue must precede offline stop"
 
 # Pin the validated playback and persistence core. The adapter and hook hashes
-# include only the audited native mini-player installation/teardown additions.
+# include the audited native mini-player snapshot/collapse additions while the
+# playback manager, coordinator, policies and metadata remain unchanged.
 assert_unchanged_blob "Source/Offline/YTMUOfflinePlaybackManager.m" "cda6af9a764448e9d5746a1584885fa125c4e7a4"
 assert_unchanged_blob "Source/Offline/YTMUPlaybackCoordinator.m" "942f7c775831cf9bbdee7216943bf78186000603"
-assert_unchanged_blob "Source/Offline/YTMUNativePlaybackAdapter.h" "1d10947b97020429ea195d16ed01dfad4e21286e"
-assert_unchanged_blob "Source/Offline/YTMUNativePlaybackAdapter.m" "695bc40d2a25037b3ce48bc28a2383dfc8fd85c0"
-assert_unchanged_blob "Source/Offline/YTMUOfflinePlaybackHooks.x" "63b8d3925216b88218de27474e22f3c581134f97"
+assert_unchanged_blob "Source/Offline/YTMUNativePlaybackAdapter.h" "dcdfb18b9f132c39ef3c242798f10399866eec9d"
+assert_unchanged_blob "Source/Offline/YTMUNativePlaybackAdapter.m" "8a46ea7710e865f6af967ae89291caa4ecec53e7"
+assert_unchanged_blob "Source/Offline/YTMUOfflinePlaybackHooks.x" "f9212ab416ea7c6ea2cc752387fc28ea997734db"
 assert_unchanged_blob "Source/Offline/YTMUOfflinePlaybackPolicy.m" "a7f6ceb610a3104810321f8cfe86da449cd3dda4"
 assert_unchanged_blob "Source/Offline/YTMUPlaybackCoordinatorPolicy.m" "8644aca7bbbcb04c87563dd2a5ff369d5d6d4a33"
 assert_unchanged_blob "Source/Offline/YTMUOfflineModels.h" "98871b06ace3b25b16c3301c5476fe6db2705162"
