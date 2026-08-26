@@ -98,6 +98,80 @@ static void YTMUAppendUniqueView(NSMutableArray<UIView *> *views, UIView *view) 
     if (view != nil && ![views containsObject:view]) [views addObject:view];
 }
 
+static CGRect YTMUNativeMiniPlayerCardBandInWindow(CGRect miniPlayerFrame,
+                                                   CGRect pivotFrame,
+                                                   CGRect windowBounds) {
+    CGRect visibleMiniPlayerFrame = CGRectIntersection(miniPlayerFrame, windowBounds);
+    CGRect visiblePivotFrame = CGRectIntersection(pivotFrame, windowBounds);
+    if (!YTMURectIsFiniteAndVisible(visibleMiniPlayerFrame)
+        || !YTMURectIsFiniteAndVisible(visiblePivotFrame)) {
+        return CGRectNull;
+    }
+
+    CGFloat cardTop = CGRectGetMinY(miniPlayerFrame);
+    CGFloat cardBottom = CGRectGetMinY(pivotFrame);
+    if (!isfinite(cardTop)
+        || !isfinite(cardBottom)
+        || cardBottom <= cardTop + YTMUNativeVisualGeometryTolerance) {
+        return CGRectNull;
+    }
+    return CGRectIntersection(
+        CGRectMake(CGRectGetMinX(windowBounds),
+                   cardTop,
+                   CGRectGetWidth(windowBounds),
+                   cardBottom - cardTop),
+        windowBounds);
+}
+
+static BOOL YTMUNativeMiniPlayerCardFrameIsSafe(CGRect cardFrame,
+                                                 CGRect cardBand,
+                                                 CGRect windowBounds,
+                                                 CGRect watchFrame,
+                                                 CGRect headerFrame,
+                                                 CGRect pivotFrame) {
+    if (!YTMURectIsFiniteAndVisible(cardFrame)
+        || !YTMURectIsFiniteAndVisible(cardBand)
+        || !YTMURectIsFiniteAndVisible(windowBounds)
+        || !YTMURectIsFiniteAndVisible(watchFrame)
+        || !YTMURectIsFiniteAndVisible(pivotFrame)
+        || YTMURectsEqualWithinTolerance(cardFrame, windowBounds)
+        || YTMURectsEqualWithinTolerance(cardFrame,
+                                         CGRectIntersection(watchFrame, windowBounds))
+        || !CGRectContainsRect(CGRectInset(cardBand,
+                                           -YTMUNativeVisualGeometryTolerance,
+                                           -YTMUNativeVisualGeometryTolerance),
+                               cardFrame)
+        || CGRectIntersectsRect(cardFrame, pivotFrame)) {
+        return NO;
+    }
+    return !YTMURectIsFiniteAndVisible(headerFrame)
+        || !CGRectIntersectsRect(cardFrame, headerFrame);
+}
+
+static void YTMUAppendCardParticipantIfContained(NSMutableArray<UIView *> *views,
+                                                  UIView *view,
+                                                  UIWindow *window,
+                                                  CGRect cardFrame,
+                                                  NSArray<UIView *> *excludedViews) {
+    if (view == nil
+        || window == nil
+        || view.window != window
+        || [excludedViews containsObject:view]) {
+        return;
+    }
+    CGRect participantFrame = [view convertRect:view.bounds toView:window];
+    CGRect visibleParticipantFrame = CGRectIntersection(participantFrame, window.bounds);
+    if (!YTMURectIsFiniteAndVisible(visibleParticipantFrame)
+        || YTMURectsEqualWithinTolerance(visibleParticipantFrame, window.bounds)
+        || !CGRectContainsRect(CGRectInset(cardFrame,
+                                           -YTMUNativeVisualGeometryTolerance,
+                                           -YTMUNativeVisualGeometryTolerance),
+                               visibleParticipantFrame)) {
+        return;
+    }
+    YTMUAppendUniqueView(views, view);
+}
+
 @interface YTMUNativeMiniPlayerVisualContext : NSObject
 @property (nonatomic, weak) UIWindow *window;
 @property (nonatomic, weak) UIView *watchView;
@@ -165,72 +239,112 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         watchView, "_frostedGlassView", "@\"UIView\"", UIView.class);
     UIView *pivotBarView = YTMUObjectReturnedByVerifiedSelector(
         watchView, @"pivotBarView", NSClassFromString(@"YTPivotBarView"));
-    if (containerView == nil || gradientBackgroundView == nil || containerShadowView == nil) {
+    UIView *headerView = YTMUObjectReturnedByVerifiedSelector(
+        watchView, @"headerView", UIView.class);
+    if (containerView == nil
+        || gradientBackgroundView == nil
+        || containerShadowView == nil
+        || pivotBarView == nil
+        || pivotBarView.window != window
+        || pivotBarView.hidden) {
         return nil;
     }
 
     CGRect miniPlayerFrame = [miniPlayerView convertRect:miniPlayerView.bounds toView:window];
     CGRect controllerFrame = [controllerRootView convertRect:controllerRootView.bounds toView:window];
+    CGRect watchFrame = [watchView convertRect:watchView.bounds toView:window];
     CGRect containerFrame = [containerView convertRect:containerView.bounds toView:window];
     CGRect gradientFrame = [gradientBackgroundView convertRect:gradientBackgroundView.bounds
                                                          toView:window];
     CGRect shadowFrame = [containerShadowView convertRect:containerShadowView.bounds toView:window];
+    CGRect pivotFrame = [pivotBarView convertRect:pivotBarView.bounds toView:window];
+    CGRect headerFrame = headerView != nil && headerView.window == window && !headerView.hidden
+        ? [headerView convertRect:headerView.bounds toView:window]
+        : CGRectNull;
     if (!YTMURectIsFiniteAndVisible(miniPlayerFrame)
         || !YTMURectIsFiniteAndVisible(controllerFrame)
+        || !YTMURectIsFiniteAndVisible(watchFrame)
         || !YTMURectIsFiniteAndVisible(containerFrame)
         || !YTMURectIsFiniteAndVisible(gradientFrame)
         || !YTMURectIsFiniteAndVisible(shadowFrame)
+        || !YTMURectIsFiniteAndVisible(pivotFrame)
         || CGRectIsNull(CGRectIntersection(containerFrame, miniPlayerFrame))) {
         return nil;
     }
 
-    CGRect cardFrame = CGRectUnion(containerFrame, gradientFrame);
-    cardFrame = CGRectUnion(cardFrame, shadowFrame);
-    cardFrame = CGRectUnion(cardFrame, miniPlayerFrame);
-    cardFrame = CGRectUnion(cardFrame, controllerFrame);
-    BOOL includeFrostedGlassView = NO;
-    if (frostedGlassView != nil && frostedGlassView.window == window && !frostedGlassView.hidden) {
-        CGRect frostedFrame = [frostedGlassView convertRect:frostedGlassView.bounds toView:window];
-        if (YTMURectIsFiniteAndVisible(frostedFrame)
-            && !CGRectIsNull(CGRectIntersection(frostedFrame, containerFrame))) {
-            cardFrame = CGRectUnion(cardFrame, frostedFrame);
-            includeFrostedGlassView = YES;
+    CGRect cardBand = YTMUNativeMiniPlayerCardBandInWindow(miniPlayerFrame,
+                                                           pivotFrame,
+                                                           window.bounds);
+    if (!YTMURectIsFiniteAndVisible(cardBand)) return nil;
+
+    // YTMWatchView owns full-page compositor views as well as the mini-player
+    // shell. Only their pixels inside the semantic mini-player band may
+    // contribute to the snapshot crop.
+    CGRect visibleMiniPlayerFrame = CGRectIntersection(miniPlayerFrame, cardBand);
+    CGRect visibleContainerFrame = CGRectIntersection(containerFrame, cardBand);
+    CGRect visibleGradientFrame = CGRectIntersection(gradientFrame, cardBand);
+    CGRect visibleShadowFrame = CGRectIntersection(shadowFrame, cardBand);
+    CGRect cardFrame = visibleMiniPlayerFrame;
+    for (NSValue *frameValue in @[
+             [NSValue valueWithCGRect:visibleContainerFrame],
+             [NSValue valueWithCGRect:visibleGradientFrame],
+             [NSValue valueWithCGRect:visibleShadowFrame]
+         ]) {
+        CGRect clippedFrame = frameValue.CGRectValue;
+        if (YTMURectIsFiniteAndVisible(clippedFrame)) {
+            cardFrame = CGRectUnion(cardFrame, clippedFrame);
         }
     }
-    cardFrame = CGRectIntersection(cardFrame, window.bounds);
-    if (!YTMURectIsFiniteAndVisible(cardFrame)) return nil;
-
-    if (pivotBarView != nil && pivotBarView.window == window && !pivotBarView.hidden) {
-        CGRect pivotFrame = [pivotBarView convertRect:pivotBarView.bounds toView:window];
-        if (YTMURectIsFiniteAndVisible(pivotFrame)
-            && CGRectGetMinY(pivotFrame) < CGRectGetMaxY(cardFrame)
-                - YTMUNativeVisualGeometryTolerance) {
-            return nil;
+    if (frostedGlassView != nil && frostedGlassView.window == window && !frostedGlassView.hidden) {
+        CGRect frostedFrame = [frostedGlassView convertRect:frostedGlassView.bounds toView:window];
+        CGRect visibleFrostedFrame = CGRectIntersection(frostedFrame, cardBand);
+        if (YTMURectIsFiniteAndVisible(visibleFrostedFrame)) {
+            cardFrame = CGRectUnion(cardFrame, visibleFrostedFrame);
         }
+    }
+    cardFrame = CGRectIntersection(cardFrame, cardBand);
+    if (!YTMUNativeMiniPlayerCardFrameIsSafe(cardFrame,
+                                              cardBand,
+                                              window.bounds,
+                                              watchFrame,
+                                              headerFrame,
+                                              pivotFrame)) {
+        return nil;
     }
 
     NSMutableArray<UIView *> *participants = [NSMutableArray array];
-    YTMUAppendUniqueView(participants, containerShadowView);
-    YTMUAppendUniqueView(participants, containerView);
-    YTMUAppendUniqueView(participants, gradientBackgroundView);
-    if (includeFrostedGlassView) YTMUAppendUniqueView(participants, frostedGlassView);
-    YTMUAppendUniqueView(participants, controllerRootView);
-    YTMUAppendUniqueView(participants, miniPlayerView);
-    for (UIView *participant in participants) {
-        if (participant == window || participant == watchView || participant == pivotBarView
-            || participant.window != window) {
-            return nil;
-        }
-        CGRect participantFrame = [participant convertRect:participant.bounds toView:window];
-        CGRect visibleParticipantFrame = CGRectIntersection(participantFrame, window.bounds);
-        if (YTMURectIsFiniteAndVisible(visibleParticipantFrame)
-            && !CGRectContainsRect(CGRectInset(cardFrame,
-                                               -YTMUNativeVisualGeometryTolerance,
-                                               -YTMUNativeVisualGeometryTolerance),
-                                   visibleParticipantFrame)) {
-            return nil;
-        }
-    }
+    NSArray<UIView *> *excludedParticipants = @[window, watchView, pivotBarView];
+    YTMUAppendCardParticipantIfContained(participants,
+                                         containerShadowView,
+                                         window,
+                                         cardFrame,
+                                         excludedParticipants);
+    YTMUAppendCardParticipantIfContained(participants,
+                                         containerView,
+                                         window,
+                                         cardFrame,
+                                         excludedParticipants);
+    YTMUAppendCardParticipantIfContained(participants,
+                                         gradientBackgroundView,
+                                         window,
+                                         cardFrame,
+                                         excludedParticipants);
+    YTMUAppendCardParticipantIfContained(participants,
+                                         frostedGlassView,
+                                         window,
+                                         cardFrame,
+                                         excludedParticipants);
+    YTMUAppendCardParticipantIfContained(participants,
+                                         controllerRootView,
+                                         window,
+                                         cardFrame,
+                                         excludedParticipants);
+    YTMUAppendCardParticipantIfContained(participants,
+                                         miniPlayerView,
+                                         window,
+                                         cardFrame,
+                                         excludedParticipants);
+    if (![participants containsObject:miniPlayerView]) return nil;
 
     YTMUNativeMiniPlayerVisualContext *context =
         [[YTMUNativeMiniPlayerVisualContext alloc] init];
