@@ -27,11 +27,9 @@ assert_not_contains() {
   fi
 }
 
-# YouTube Music 9.14.2 renders the native mini-player across the child
-# controller and YTMWatchView's container/gradient/shadow layers. Those watch
-# compositor views can cover the whole screen, so the snapshot must be cropped
-# to the semantic band between the mini-player top and the pivot-bar top. Each
-# native layer may contribute only its intersection with that band.
+# YouTube Music 9.14.2 exposes a verified 64pt minimized container through
+# YTMWatchView. miniPlayerView and the watch compositor views may cover most of
+# the screen, so none of their bounds may define or expand the snapshot crop.
 assert_contains "$native_swipe" "YTMUResolveNativeMiniPlayerVisualContext" \
   "the complete native mini-player visual context is not resolved semantically"
 assert_contains "$native_swipe" "NSClassFromString(@\"YTMWatchView\")" \
@@ -42,30 +40,24 @@ assert_contains "$native_swipe" "_gradientBackgroundView" \
   "the native mini-player background layer is not included"
 assert_contains "$native_swipe" "_containerShadowView" \
   "the native mini-player shadow/separator layer is not included"
-assert_contains "$native_swipe" "YTMUNativeMiniPlayerCardBandInWindow" \
-  "the snapshot is not bounded by the native mini-player and pivot bar"
-assert_contains "$native_swipe" "CGRectGetMinY(miniPlayerFrame)" \
-  "the mini-player top does not define the snapshot's upper boundary"
-assert_contains "$native_swipe" "CGRectGetMinY(pivotFrame)" \
-  "the pivot-bar top does not define the snapshot's lower boundary"
-assert_contains "$native_swipe" "CGRectIntersection(containerFrame, cardBand)" \
-  "the native container is not clipped to the mini-player band"
-assert_contains "$native_swipe" "CGRectIntersection(gradientFrame, cardBand)" \
-  "the full-screen gradient can escape the mini-player band"
-assert_contains "$native_swipe" "CGRectIntersection(shadowFrame, cardBand)" \
-  "the native shadow is not clipped to the mini-player band"
-assert_not_contains "$native_swipe" "CGRectUnion(containerFrame, gradientFrame)" \
-  "full native compositor frames are still unioned before cropping"
-assert_not_contains "$native_swipe" "CGRectUnion(cardFrame, controllerFrame)" \
-  "the controller root can still expand the snapshot to the whole screen"
-assert_contains "$native_swipe" "YTMUNativeMiniPlayerCardFrameIsSafe" \
-  "the crop is not rejected when it matches a window or watch container"
-assert_contains "$native_swipe" "YTMURectsEqualWithinTolerance(cardFrame, windowBounds)" \
-  "a window-sized snapshot rectangle is not rejected"
-assert_contains "$native_swipe" "CGRectIntersection(watchFrame, windowBounds)" \
-  "a full YTMWatchView snapshot rectangle is not rejected"
-assert_contains "$native_swipe" "CGRectIntersectsRect(cardFrame, headerFrame)" \
-  "the snapshot can still overlap the native header"
+assert_contains "$native_swipe" "YTMUClassDoubleReturnedByVerifiedSelector" \
+  "the native minimized-player height is not read through a guarded ABI"
+assert_contains "$native_swipe" '@"minimizedPlayerHeight"' \
+  "the verified YTMWatchView minimized height is not used"
+assert_contains "$native_swipe" 'strcmp(encoding, "d16@0:8")' \
+  "the minimizedPlayerHeight return ABI is not verified"
+assert_contains "$native_swipe" "YTMUNativeMiniPlayerResolveCardCrop" \
+  "the runtime crop does not use the tested geometry policy"
+assert_contains "$native_swipe" "YTMUCropRectFromCGRect(containerFrame)" \
+  "the verified native container frame is not the crop source"
+assert_not_contains "$native_swipe" "YTMUNativeMiniPlayerCardBandInWindow" \
+  "the oversized miniPlayerView still defines a snapshot band"
+assert_not_contains "$native_swipe" "CGRectGetMinY(miniPlayerFrame)" \
+  "the oversized miniPlayerView can still define the crop top"
+assert_not_contains "$native_swipe" "CGRectUnion(" \
+  "another native view can still expand the verified container crop"
+assert_not_contains "$native_swipe" "headerFrame" \
+  "an unrelated watch header is still treated as the home-header safety boundary"
 assert_contains "$native_swipe" "CGRectIntersectsRect(cardFrame, pivotFrame)" \
   "the snapshot can still overlap the bottom tab bar"
 assert_contains "$native_swipe" "resizableSnapshotViewFromRect:cardFrame" \
@@ -76,6 +68,8 @@ assert_contains "$native_swipe" "coveredNativeViews" \
   "the original shell and content are not covered atomically"
 assert_contains "$native_swipe" "YTMUAppendCardParticipantIfContained" \
   "full-screen native views are not filtered out of the opacity participants"
+assert_contains "$native_swipe" "YTMUAppendVerifiedMiniPlayerParticipant" \
+  "the verified semantic mini-player content is not covered independently of its layout bounds"
 assert_not_contains "$native_swipe" "YTMUAppendUniqueView(participants, gradientBackgroundView)" \
   "the full-screen watch gradient can still be hidden globally"
 assert_not_contains "$native_swipe" "YTMUAppendUniqueView(participants, controllerRootView)" \

@@ -73,6 +73,25 @@ static id YTMUObjectReturnedByVerifiedSelector(id object,
         : nil;
 }
 
+static BOOL YTMUClassDoubleReturnedByVerifiedSelector(Class objectClass,
+                                                       NSString *selectorName,
+                                                       double *resolvedValue) {
+    if (objectClass == Nil || resolvedValue == NULL) return NO;
+    SEL selector = NSSelectorFromString(selectorName);
+    Method method = class_getClassMethod(objectClass, selector);
+    const char *encoding = method == NULL ? NULL : method_getTypeEncoding(method);
+    if (encoding == NULL || strcmp(encoding, "d16@0:8") != 0) return NO;
+
+    __block double value = 0.0;
+    BOOL resolvedSafely = YTMUPerformObjectiveCBlockSafely(^{
+        double (*sendDouble)(id, SEL) = (void *)objc_msgSend;
+        value = sendDouble((id)objectClass, selector);
+    }, NULL);
+    if (!resolvedSafely || !isfinite(value) || value <= 0.0) return NO;
+    *resolvedValue = value;
+    return YES;
+}
+
 static UIView *YTMUViewFromVerifiedIvar(id object,
                                        const char *ivarName,
                                        const char *expectedEncoding,
@@ -98,54 +117,18 @@ static void YTMUAppendUniqueView(NSMutableArray<UIView *> *views, UIView *view) 
     if (view != nil && ![views containsObject:view]) [views addObject:view];
 }
 
-static CGRect YTMUNativeMiniPlayerCardBandInWindow(CGRect miniPlayerFrame,
-                                                   CGRect pivotFrame,
-                                                   CGRect windowBounds) {
-    CGRect visibleMiniPlayerFrame = CGRectIntersection(miniPlayerFrame, windowBounds);
-    CGRect visiblePivotFrame = CGRectIntersection(pivotFrame, windowBounds);
-    if (!YTMURectIsFiniteAndVisible(visibleMiniPlayerFrame)
-        || !YTMURectIsFiniteAndVisible(visiblePivotFrame)) {
-        return CGRectNull;
-    }
-
-    CGFloat cardTop = CGRectGetMinY(miniPlayerFrame);
-    CGFloat cardBottom = CGRectGetMinY(pivotFrame);
-    if (!isfinite(cardTop)
-        || !isfinite(cardBottom)
-        || cardBottom <= cardTop + YTMUNativeVisualGeometryTolerance) {
-        return CGRectNull;
-    }
-    return CGRectIntersection(
-        CGRectMake(CGRectGetMinX(windowBounds),
-                   cardTop,
-                   CGRectGetWidth(windowBounds),
-                   cardBottom - cardTop),
-        windowBounds);
+static YTMUMiniPlayerCropRect YTMUCropRectFromCGRect(CGRect rect) {
+    YTMUMiniPlayerCropRect cropRect = {
+        CGRectGetMinX(rect),
+        CGRectGetMinY(rect),
+        CGRectGetWidth(rect),
+        CGRectGetHeight(rect),
+    };
+    return cropRect;
 }
 
-static BOOL YTMUNativeMiniPlayerCardFrameIsSafe(CGRect cardFrame,
-                                                 CGRect cardBand,
-                                                 CGRect windowBounds,
-                                                 CGRect watchFrame,
-                                                 CGRect headerFrame,
-                                                 CGRect pivotFrame) {
-    if (!YTMURectIsFiniteAndVisible(cardFrame)
-        || !YTMURectIsFiniteAndVisible(cardBand)
-        || !YTMURectIsFiniteAndVisible(windowBounds)
-        || !YTMURectIsFiniteAndVisible(watchFrame)
-        || !YTMURectIsFiniteAndVisible(pivotFrame)
-        || YTMURectsEqualWithinTolerance(cardFrame, windowBounds)
-        || YTMURectsEqualWithinTolerance(cardFrame,
-                                         CGRectIntersection(watchFrame, windowBounds))
-        || !CGRectContainsRect(CGRectInset(cardBand,
-                                           -YTMUNativeVisualGeometryTolerance,
-                                           -YTMUNativeVisualGeometryTolerance),
-                               cardFrame)
-        || CGRectIntersectsRect(cardFrame, pivotFrame)) {
-        return NO;
-    }
-    return !YTMURectIsFiniteAndVisible(headerFrame)
-        || !CGRectIntersectsRect(cardFrame, headerFrame);
+static CGRect YTMUCGRectFromCropRect(YTMUMiniPlayerCropRect rect) {
+    return CGRectMake(rect.x, rect.y, rect.width, rect.height);
 }
 
 static void YTMUAppendCardParticipantIfContained(NSMutableArray<UIView *> *views,
@@ -172,6 +155,27 @@ static void YTMUAppendCardParticipantIfContained(NSMutableArray<UIView *> *views
     YTMUAppendUniqueView(views, view);
 }
 
+static void YTMUAppendVerifiedMiniPlayerParticipant(NSMutableArray<UIView *> *views,
+                                                     UIView *miniPlayerView,
+                                                     Class miniPlayerViewClass,
+                                                     UIWindow *window,
+                                                     CGRect cardFrame) {
+    if (miniPlayerView == nil
+        || miniPlayerViewClass == Nil
+        || ![miniPlayerView isKindOfClass:miniPlayerViewClass]
+        || miniPlayerView.window != window) {
+        return;
+    }
+    CGRect miniPlayerFrame = [miniPlayerView convertRect:miniPlayerView.bounds toView:window];
+    if (!YTMURectIsFiniteAndVisible(CGRectIntersection(miniPlayerFrame, cardFrame))) return;
+
+    // YTMMiniPlayerView is the verified semantic owner of the title, artwork,
+    // and controls. Its layout bounds may be much taller than the 64pt card,
+    // but hiding this exact class does not hide YTMWatchView, its controller
+    // root, the home feed, or the pivot bar.
+    YTMUAppendUniqueView(views, miniPlayerView);
+}
+
 @interface YTMUNativeMiniPlayerVisualContext : NSObject
 @property (nonatomic, weak) UIWindow *window;
 @property (nonatomic, weak) UIView *watchView;
@@ -192,12 +196,14 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
     Class miniPlayerControllerClass = NSClassFromString(@"YTMMiniPlayerViewController");
     Class watchControllerClass = NSClassFromString(@"YTMWatchViewController");
     Class watchViewClass = NSClassFromString(@"YTMWatchView");
+    Class miniPlayerViewClass = NSClassFromString(@"YTMMiniPlayerView");
     Class gradientClass = NSClassFromString(@"YTMGradientBackgroundView");
     if (controller == nil
         || miniPlayerView == nil
         || miniPlayerControllerClass == Nil
         || watchControllerClass == Nil
         || watchViewClass == Nil
+        || miniPlayerViewClass == Nil
         || gradientClass == Nil
         || ![controller isKindOfClass:miniPlayerControllerClass]
         || !controller.isViewLoaded) {
@@ -216,7 +222,7 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
     UIView *watchView = YTMUObjectReturnedByVerifiedSelector(
         watchController, @"watchView", watchViewClass);
     UIView *watchMiniPlayerView = YTMUObjectReturnedByVerifiedSelector(
-        watchView, @"miniPlayerView", NSClassFromString(@"YTMMiniPlayerView"));
+        watchView, @"miniPlayerView", miniPlayerViewClass);
     if (watchController == nil || watchView == nil || watchMiniPlayerView != miniPlayerView) {
         return nil;
     }
@@ -239,8 +245,6 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         watchView, "_frostedGlassView", "@\"UIView\"", UIView.class);
     UIView *pivotBarView = YTMUObjectReturnedByVerifiedSelector(
         watchView, @"pivotBarView", NSClassFromString(@"YTPivotBarView"));
-    UIView *headerView = YTMUObjectReturnedByVerifiedSelector(
-        watchView, @"headerView", UIView.class);
     if (containerView == nil
         || gradientBackgroundView == nil
         || containerShadowView == nil
@@ -250,65 +254,31 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         return nil;
     }
 
-    CGRect miniPlayerFrame = [miniPlayerView convertRect:miniPlayerView.bounds toView:window];
-    CGRect controllerFrame = [controllerRootView convertRect:controllerRootView.bounds toView:window];
-    CGRect watchFrame = [watchView convertRect:watchView.bounds toView:window];
     CGRect containerFrame = [containerView convertRect:containerView.bounds toView:window];
-    CGRect gradientFrame = [gradientBackgroundView convertRect:gradientBackgroundView.bounds
-                                                         toView:window];
-    CGRect shadowFrame = [containerShadowView convertRect:containerShadowView.bounds toView:window];
     CGRect pivotFrame = [pivotBarView convertRect:pivotBarView.bounds toView:window];
-    CGRect headerFrame = headerView != nil && headerView.window == window && !headerView.hidden
-        ? [headerView convertRect:headerView.bounds toView:window]
-        : CGRectNull;
-    if (!YTMURectIsFiniteAndVisible(miniPlayerFrame)
-        || !YTMURectIsFiniteAndVisible(controllerFrame)
-        || !YTMURectIsFiniteAndVisible(watchFrame)
-        || !YTMURectIsFiniteAndVisible(containerFrame)
-        || !YTMURectIsFiniteAndVisible(gradientFrame)
-        || !YTMURectIsFiniteAndVisible(shadowFrame)
-        || !YTMURectIsFiniteAndVisible(pivotFrame)
-        || CGRectIsNull(CGRectIntersection(containerFrame, miniPlayerFrame))) {
+    if (!YTMURectIsFiniteAndVisible(containerFrame)
+        || !YTMURectIsFiniteAndVisible(pivotFrame)) {
         return nil;
     }
 
-    CGRect cardBand = YTMUNativeMiniPlayerCardBandInWindow(miniPlayerFrame,
-                                                           pivotFrame,
-                                                           window.bounds);
-    if (!YTMURectIsFiniteAndVisible(cardBand)) return nil;
-
-    // YTMWatchView owns full-page compositor views as well as the mini-player
-    // shell. Only their pixels inside the semantic mini-player band may
-    // contribute to the snapshot crop.
-    CGRect visibleMiniPlayerFrame = CGRectIntersection(miniPlayerFrame, cardBand);
-    CGRect visibleContainerFrame = CGRectIntersection(containerFrame, cardBand);
-    CGRect visibleGradientFrame = CGRectIntersection(gradientFrame, cardBand);
-    CGRect visibleShadowFrame = CGRectIntersection(shadowFrame, cardBand);
-    CGRect cardFrame = visibleMiniPlayerFrame;
-    for (NSValue *frameValue in @[
-             [NSValue valueWithCGRect:visibleContainerFrame],
-             [NSValue valueWithCGRect:visibleGradientFrame],
-             [NSValue valueWithCGRect:visibleShadowFrame]
-         ]) {
-        CGRect clippedFrame = frameValue.CGRectValue;
-        if (YTMURectIsFiniteAndVisible(clippedFrame)) {
-            cardFrame = CGRectUnion(cardFrame, clippedFrame);
-        }
+    double nativeMinimizedHeight = 0.0;
+    if (!YTMUClassDoubleReturnedByVerifiedSelector(
+            watchViewClass, @"minimizedPlayerHeight", &nativeMinimizedHeight)) {
+        return nil;
     }
-    if (frostedGlassView != nil && frostedGlassView.window == window && !frostedGlassView.hidden) {
-        CGRect frostedFrame = [frostedGlassView convertRect:frostedGlassView.bounds toView:window];
-        CGRect visibleFrostedFrame = CGRectIntersection(frostedFrame, cardBand);
-        if (YTMURectIsFiniteAndVisible(visibleFrostedFrame)) {
-            cardFrame = CGRectUnion(cardFrame, visibleFrostedFrame);
-        }
+    YTMUMiniPlayerCropRect resolvedCrop;
+    if (!YTMUNativeMiniPlayerResolveCardCrop(
+            YTMUCropRectFromCGRect(window.bounds),
+            YTMUCropRectFromCGRect(containerFrame),
+            YTMUCropRectFromCGRect(pivotFrame),
+            nativeMinimizedHeight,
+            YTMUNativeVisualGeometryTolerance,
+            &resolvedCrop)) {
+        return nil;
     }
-    cardFrame = CGRectIntersection(cardFrame, cardBand);
-    if (!YTMUNativeMiniPlayerCardFrameIsSafe(cardFrame,
-                                              cardBand,
-                                              window.bounds,
-                                              watchFrame,
-                                              headerFrame,
-                                              pivotFrame)) {
+    CGRect cardFrame = YTMUCGRectFromCropRect(resolvedCrop);
+    if (!YTMURectIsFiniteAndVisible(cardFrame)
+        || CGRectIntersectsRect(cardFrame, pivotFrame)) {
         return nil;
     }
 
@@ -339,12 +309,15 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
                                          window,
                                          cardFrame,
                                          excludedParticipants);
-    YTMUAppendCardParticipantIfContained(participants,
-                                         miniPlayerView,
-                                         window,
-                                         cardFrame,
-                                         excludedParticipants);
-    if (![participants containsObject:miniPlayerView]) return nil;
+    YTMUAppendVerifiedMiniPlayerParticipant(participants,
+                                            miniPlayerView,
+                                            miniPlayerViewClass,
+                                            window,
+                                            cardFrame);
+    if (![participants containsObject:containerView]
+        || ![participants containsObject:miniPlayerView]) {
+        return nil;
+    }
 
     YTMUNativeMiniPlayerVisualContext *context =
         [[YTMUNativeMiniPlayerVisualContext alloc] init];
