@@ -8,6 +8,21 @@ extern const double YTMUMiniPlayerSwipeVerticalDominanceRatio;
 extern const double YTMUMiniPlayerSwipeDistanceRatio;
 extern const double YTMUMiniPlayerSwipeFastVelocity;
 
+typedef struct {
+    double x;
+    double y;
+    double width;
+    double height;
+} YTMUMiniPlayerCropRect;
+
+bool YTMUNativeMiniPlayerResolveCardCrop(
+    YTMUMiniPlayerCropRect windowRect,
+    YTMUMiniPlayerCropRect nativeContainerRect,
+    YTMUMiniPlayerCropRect pivotBarRect,
+    double nativeMinimizedHeight,
+    double geometryTolerance,
+    YTMUMiniPlayerCropRect *resolvedCrop);
+
 bool YTMUMiniPlayerSwipeCanBegin(YTMUPlaybackOwner owner,
                                  YTMUPlaybackOwner expectedOwner,
                                  bool sessionActive,
