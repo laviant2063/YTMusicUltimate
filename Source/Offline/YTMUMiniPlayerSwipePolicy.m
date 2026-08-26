@@ -1,6 +1,7 @@
 #import "YTMUMiniPlayerSwipePolicy.h"
 
 #include <math.h>
+#include <stddef.h>
 
 const double YTMUMiniPlayerSwipeVerticalDominanceRatio = 1.2;
 const double YTMUMiniPlayerSwipeDistanceRatio = 0.35;
