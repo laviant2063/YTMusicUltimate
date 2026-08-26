@@ -94,6 +94,30 @@ assert_contains "$native_swipe" "animationView.alpha" \
   "the unified animation owner does not own the fade"
 assert_contains "$native_swipe" "interactionBlocker" \
   "the covered native controls can receive input during the finish animation"
+assert_not_contains "$native_swipe" "[window addSubview:interactionBlocker]" \
+  "the transient interaction blocker is still raised above the native pivot bar"
+assert_not_contains "$native_swipe" "[window addSubview:snapshot]" \
+  "the native mini-player snapshot is still raised above the native pivot bar"
+assert_contains "$native_swipe" "YTMUClosestCommonAncestorForViews" \
+  "the animation host does not resolve the live common ancestor of the card and pivot bar"
+assert_contains "$native_swipe" "YTMUDirectChildContainingView" \
+  "the native pivot branch is not resolved semantically from the live hierarchy"
+assert_contains "$native_swipe" "insertSubview:occlusionView belowSubview:pivotBranch" \
+  "the card animation host is not explicitly placed below the pivot bar branch"
+assert_contains "$native_swipe" "occlusionView.clipsToBounds = YES" \
+  "the card snapshot is not clipped as it crosses the pivot bar boundary"
+assert_contains "$native_swipe" "snapshot.frame = occlusionView.bounds" \
+  "the single animation owner does not remain card-scoped inside the occlusion host"
+assert_not_contains "$native_swipe" "pivotBarView.transform =" \
+  "the native pivot bar transform is modified by the mini-player gesture"
+assert_not_contains "$native_swipe" "pivotBarView.alpha =" \
+  "the native pivot bar alpha is modified by the mini-player gesture"
+assert_not_contains "$native_swipe" "pivotBarView.hidden =" \
+  "the native pivot bar visibility is modified by the mini-player gesture"
+assert_not_contains "$native_swipe" "pivotBarView.layer.opacity =" \
+  "the native pivot bar layer opacity is modified by the mini-player gesture"
+assert_not_contains "$native_swipe" "pivotBarView.userInteractionEnabled =" \
+  "the native pivot bar interaction state is modified by the mini-player gesture"
 assert_not_contains "$native_swipe" "miniPlayerView.transform =" \
   "the internal native mini-player still receives its own transform"
 assert_not_contains "$native_swipe" "self.visualRootView.transform =" \
