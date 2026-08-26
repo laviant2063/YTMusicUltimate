@@ -189,7 +189,8 @@ assert_not_contains "$native_swipe" "[self.visualRootView removeFromSuperview]" 
   "the native mini-player root is removed from YouTube Music's hierarchy"
 if grep -F 'removeFromSuperview' "$native_swipe" \
     | grep -Fv '[snapshot removeFromSuperview]' \
-    | grep -Fv '[interactionBlocker removeFromSuperview]' >/dev/null; then
+    | grep -Fv '[interactionBlocker removeFromSuperview]' \
+    | grep -Fv '[occlusionView removeFromSuperview]' >/dev/null; then
   fail "a view other than the handler-owned transient snapshot is removed"
 fi
 

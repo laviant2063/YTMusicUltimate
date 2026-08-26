@@ -176,6 +176,38 @@ static void YTMUAppendVerifiedMiniPlayerParticipant(NSMutableArray<UIView *> *vi
     YTMUAppendUniqueView(views, miniPlayerView);
 }
 
+static UIView *YTMUClosestCommonAncestorForViews(UIView *firstView, UIView *secondView) {
+    if (firstView == nil || secondView == nil) return nil;
+    for (UIView *candidate = firstView; candidate != nil; candidate = candidate.superview) {
+        if (candidate == secondView || [secondView isDescendantOfView:candidate]) {
+            return candidate;
+        }
+    }
+    return nil;
+}
+
+static UIView *YTMUDirectChildContainingView(UIView *ancestor, UIView *view) {
+    if (ancestor == nil || view == nil || ancestor == view) return nil;
+    UIView *branch = view;
+    while (branch.superview != nil && branch.superview != ancestor) {
+        branch = branch.superview;
+    }
+    return branch.superview == ancestor ? branch : nil;
+}
+
+static BOOL YTMUViewIsOrderedBelowSibling(UIView *view, UIView *sibling) {
+    UIView *superview = view.superview;
+    if (view == nil || sibling == nil || superview == nil || sibling.superview != superview) {
+        return NO;
+    }
+    NSArray<UIView *> *siblings = superview.subviews;
+    NSUInteger viewIndex = [siblings indexOfObjectIdenticalTo:view];
+    NSUInteger siblingIndex = [siblings indexOfObjectIdenticalTo:sibling];
+    return viewIndex != NSNotFound
+        && siblingIndex != NSNotFound
+        && viewIndex < siblingIndex;
+}
+
 @interface YTMUNativeMiniPlayerVisualContext : NSObject
 @property (nonatomic, weak) UIWindow *window;
 @property (nonatomic, weak) UIView *watchView;
@@ -338,6 +370,9 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
 @property (nonatomic, weak) UIView *visualRootView;
 @property (nonatomic, weak) UIPanGestureRecognizer *panGesture;
 @property (nonatomic, weak) UIWindow *animationWindow;
+@property (nonatomic, weak) UIView *animationCommonAncestor;
+@property (nonatomic, weak) UIView *animationPivotBranch;
+@property (nonatomic, strong) UIView *animationOcclusionView;
 @property (nonatomic, strong) UIView *animationSnapshot;
 @property (nonatomic, strong) UIView *interactionBlocker;
 @property (nonatomic, copy) NSArray<UIView *> *coveredNativeViews;
@@ -510,19 +545,34 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
 - (BOOL)unifiedAnimationGeometryIsCurrent {
     UIView *visualRootView = self.visualRootView;
     UIView *animationView = self.animationSnapshot;
+    UIView *occlusionView = self.animationOcclusionView;
+    UIView *commonAncestor = self.animationCommonAncestor;
+    UIView *pivotBranch = self.animationPivotBranch;
     UIWindow *animationWindow = self.animationWindow;
     YTMUNativeMiniPlayerVisualContext *context =
         YTMUResolveNativeMiniPlayerVisualContext(self.miniPlayerController,
                                                  self.miniPlayerView);
+    CGRect occlusionFrameInWindow = occlusionView == nil || animationWindow == nil
+        ? CGRectNull
+        : [occlusionView convertRect:occlusionView.bounds toView:animationWindow];
     return visualRootView != nil
         && animationView != nil
+        && occlusionView != nil
+        && commonAncestor != nil
+        && pivotBranch != nil
         && animationWindow != nil
         && context != nil
         && context.window == animationWindow
-        && animationView.superview == animationWindow
+        && animationView.superview == occlusionView
+        && occlusionView.superview == commonAncestor
+        && pivotBranch.superview == commonAncestor
+        && YTMUViewIsOrderedBelowSibling(occlusionView, pivotBranch)
+        && occlusionView.clipsToBounds
         && CGRectEqualToRect(visualRootView.bounds, self.visualRootBoundsAtSwipeStart)
         && CGRectEqualToRect(animationWindow.bounds,
                              self.animationWindowBoundsAtSwipeStart)
+        && YTMURectsEqualWithinTolerance(occlusionFrameInWindow,
+                                         self.animationCardFrameInWindow)
         && YTMURectsEqualWithinTolerance(context.cardFrameInWindow,
                                          self.animationCardFrameInWindow);
 }
@@ -576,10 +626,22 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
                                                  miniPlayerView);
     UIWindow *window = context.window;
     CGRect cardFrame = context.cardFrameInWindow;
+    UIView *commonAncestor = YTMUClosestCommonAncestorForViews(context.containerView,
+                                                               context.pivotBarView);
+    UIView *cardBranch = YTMUDirectChildContainingView(commonAncestor,
+                                                       context.containerView);
+    UIView *pivotBranch = YTMUDirectChildContainingView(commonAncestor,
+                                                        context.pivotBarView);
     if (miniPlayerView == nil
         || visualRootView == nil
         || context == nil
         || window == nil
+        || commonAncestor == nil
+        || cardBranch == nil
+        || pivotBranch == nil
+        || cardBranch == pivotBranch
+        || commonAncestor.window != window
+        || pivotBranch.window != window
         || !YTMURectIsFiniteAndVisible(cardFrame)
         || (miniPlayerView != visualRootView
             && ![miniPlayerView isDescendantOfView:visualRootView])) {
@@ -598,25 +660,49 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
     self.animationCardFrameInWindow = cardFrame;
 
     [window layoutIfNeeded];
+    [commonAncestor layoutIfNeeded];
     UIView *snapshot = [window resizableSnapshotViewFromRect:cardFrame
                                          afterScreenUpdates:NO
                                               withCapInsets:UIEdgeInsetsZero];
     if (snapshot == nil) return NO;
-    snapshot.frame = cardFrame;
+    CGRect occlusionFrame = [commonAncestor convertRect:cardFrame fromView:window];
+    if (!YTMURectIsFiniteAndVisible(occlusionFrame)) return NO;
+    UIView *occlusionView = [[UIView alloc] initWithFrame:occlusionFrame];
+    occlusionView.backgroundColor = UIColor.clearColor;
+    occlusionView.userInteractionEnabled = YES;
+    occlusionView.isAccessibilityElement = NO;
+    occlusionView.accessibilityElementsHidden = YES;
+    occlusionView.clipsToBounds = YES;
+    occlusionView.layer.masksToBounds = YES;
+    snapshot.frame = occlusionView.bounds;
     snapshot.userInteractionEnabled = NO;
     snapshot.isAccessibilityElement = NO;
     snapshot.accessibilityElementsHidden = YES;
     snapshot.clipsToBounds = NO;
     snapshot.layer.masksToBounds = NO;
-    UIView *interactionBlocker = [[UIView alloc] initWithFrame:snapshot.frame];
+    UIView *interactionBlocker = [[UIView alloc] initWithFrame:occlusionView.bounds];
     interactionBlocker.backgroundColor = UIColor.clearColor;
     interactionBlocker.userInteractionEnabled = YES;
     interactionBlocker.isAccessibilityElement = NO;
     interactionBlocker.accessibilityElementsHidden = YES;
-    [window addSubview:interactionBlocker];
-    [window addSubview:snapshot];
+    [occlusionView addSubview:interactionBlocker];
+    [occlusionView addSubview:snapshot];
+    __block BOOL placedBelowPivot = NO;
+    BOOL placementSucceeded = YTMUPerformObjectiveCBlockSafely(^{
+        if (pivotBranch.superview != commonAncestor) return;
+        [commonAncestor insertSubview:occlusionView belowSubview:pivotBranch];
+        placedBelowPivot = occlusionView.superview == commonAncestor
+            && YTMUViewIsOrderedBelowSibling(occlusionView, pivotBranch);
+    }, NULL);
+    if (!placementSucceeded || !placedBelowPivot) {
+        [occlusionView removeFromSuperview];
+        return NO;
+    }
 
     self.animationWindow = window;
+    self.animationCommonAncestor = commonAncestor;
+    self.animationPivotBranch = pivotBranch;
+    self.animationOcclusionView = occlusionView;
     self.animationSnapshot = snapshot;
     self.interactionBlocker = interactionBlocker;
     self.animationOriginalTransform = snapshot.transform;
@@ -652,9 +738,12 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
 
 - (void)discardAnimationSnapshot {
     UIView *snapshot = self.animationSnapshot;
-    UIView *interactionBlocker = self.interactionBlocker;
+    UIView *occlusionView = self.animationOcclusionView;
     self.animationSnapshot = nil;
     self.interactionBlocker = nil;
+    self.animationOcclusionView = nil;
+    self.animationCommonAncestor = nil;
+    self.animationPivotBranch = nil;
     self.animationWindow = nil;
     self.animationWindowBoundsAtSwipeStart = CGRectZero;
     self.animationCardFrameInWindow = CGRectZero;
@@ -662,9 +751,9 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         [snapshot.layer removeAllAnimations];
         // Only the transient view created by this handler is removed. Native
         // YouTube Music views remain in their original hierarchy.
-        [snapshot removeFromSuperview];
     }
-    [interactionBlocker removeFromSuperview];
+    [occlusionView.layer removeAllAnimations];
+    [occlusionView removeFromSuperview];
 }
 
 - (void)restoreVisualRootIncludingNativeState:(BOOL)restoreNativeState {
