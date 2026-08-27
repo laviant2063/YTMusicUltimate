@@ -89,6 +89,23 @@ xcrun clang \
 
 "$build_root/native-visual-state-tests"
 
+python3 "$repo_root/Tests/build_native_visual_context_test.py" \
+  "$repo_root/Source/Offline/YTMUNativeMiniPlayerSwipeController.m" \
+  "$repo_root/Tests/YTMUNativeMiniPlayerVisualContextTests.m" \
+  "$build_root/native-visual-context-tests.m"
+
+xcrun clang \
+  -fobjc-arc \
+  -Wall -Wextra -Werror \
+  -framework Foundation -framework CoreGraphics \
+  "$build_root/native-visual-context-tests.m" \
+  "$repo_root/Source/Offline/YTMUMiniPlayerSwipePolicy.m" \
+  "$repo_root/Source/Offline/YTMUObjectiveCExceptionGuard.m" \
+  -I"$repo_root/Source/Offline" \
+  -o "$build_root/native-visual-context-tests"
+
+"$build_root/native-visual-context-tests"
+
 bash "$repo_root/Tests/YTMUPlaybackIntegrationStaticTests.sh"
 bash "$repo_root/Tests/YTMUOfflinePlayerUIStaticTests.sh"
 bash "$repo_root/Tests/YTMUNativeMiniPlayerUnifiedDismissStaticTests.sh"
