@@ -1,7 +1,9 @@
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <objc/message.h>
 
 #import "YTMUPlaybackCoordinatorPolicy.h"
+#import "YTMUMiniPlayerSwipePolicy.h"
 
 static int failures;
 #define CHECK(condition) do { if (!(condition)) { \
@@ -9,7 +11,8 @@ static int failures;
 } } while (0)
 
 // Deliberately minimal doubles: these test native property ownership and stale
-// callbacks, not UIKit view hierarchy, gesture delivery, or real rendering.
+// callbacks and gesture delegate decisions, not UIKit gesture delivery or
+// real rendering. Visual context below is a controlled host-API test seam.
 @interface YTMUTestLayer : NSObject
 @property (nonatomic) float opacity;
 @property (nonatomic) NSUInteger opacityWriteCount;
@@ -74,10 +77,52 @@ static const NSTimeInterval YTMUNativeSwipeRestoreDuration = 0.22;
 @property (nonatomic, strong) UIView *view;
 @end
 @implementation UIViewController @end
-@interface UIPanGestureRecognizer : NSObject
+@interface UIGestureRecognizer : NSObject
 @property (nonatomic) BOOL enabled;
+@property (nonatomic, weak) UIView *view;
+@property (nonatomic, weak) id delegate;
 @end
-@implementation UIPanGestureRecognizer @end
+@implementation UIGestureRecognizer @end
+@interface UIPanGestureRecognizer : UIGestureRecognizer
+@property (nonatomic) CGPoint testVelocity;
+- (CGPoint)velocityInView:(UIView *)view;
+@end
+@implementation UIPanGestureRecognizer
+- (CGPoint)velocityInView:(__unused UIView *)view { return self.testVelocity; }
+@end
+@interface UIScrollView : UIView
+@property (nonatomic, strong) UIPanGestureRecognizer *panGestureRecognizer;
+@end
+@implementation UIScrollView @end
+@interface UIControl : UIView @end
+@implementation UIControl @end
+@interface UITouch : NSObject
+@property (nonatomic, strong) UIView *view;
+@property (nonatomic) CGPoint testLocation;
+- (CGPoint)locationInView:(UIView *)view;
+@end
+@implementation UITouch
+- (CGPoint)locationInView:(__unused UIView *)view { return self.testLocation; }
+@end
+@interface YTMWatchPageLayoutControllerImpl : NSObject @end
+@implementation YTMWatchPageLayoutControllerImpl @end
+static BOOL testVoiceOverRunning;
+static BOOL UIAccessibilityIsVoiceOverRunning(void) { return testVoiceOverRunning; }
+
+@interface YTMUNativeMiniPlayerVisualContext : NSObject
+@property (nonatomic, strong) UIWindow *window;
+@property (nonatomic, strong) UIView *containerView;
+@property (nonatomic, strong) UIView *pivotBarView;
+@property (nonatomic) CGRect cardFrameInWindow;
+@end
+@implementation YTMUNativeMiniPlayerVisualContext @end
+static YTMUNativeMiniPlayerVisualContext *testVisualContext;
+static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualContext(
+    __unused UIViewController *controller, __unused UIView *miniPlayerView,
+    NSString **failureReason) {
+    if (failureReason != NULL) *failureReason = @"test-host-context-unavailable";
+    return testVisualContext;
+}
 
 @interface YTMUPlaybackCoordinator : NSObject
 @property (nonatomic) YTMUPlaybackOwner owner;
@@ -118,6 +163,7 @@ static YTMUTestFixture *fixture(void) {
     YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerSuppressed = NO;
     YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerVisualShellCollapsed = NO;
     deferAnimations = NO; deferredCompletion = nil;
+    testVoiceOverRunning = NO; testVisualContext = nil;
     YTMUTestFixture *f = [YTMUTestFixture new];
     f.root = [UIView new]; f.mini = [UIView new]; f.mini.superview = f.root;
     f.controller = [UIViewController new]; f.controller.view = f.root;
@@ -140,6 +186,150 @@ static YTMUTestFixture *fixture(void) {
                     forKey:@"visualRootOriginalTransform"];
     }
     return f;
+}
+
+// Exercise the production delegate methods, including UIKit's documented NO
+// default when the old handler has no dynamic failure-requirement method.
+static BOOL nativePanMustWait(YTMUNativeMiniPlayerSwipeHandler *handler,
+                               UIGestureRecognizer *nativePan) {
+    SEL selector = NSSelectorFromString(
+        @"gestureRecognizer:shouldBeRequiredToFailByGestureRecognizer:");
+    if (![handler respondsToSelector:selector]) return NO;
+    BOOL (*sendBool)(id, SEL, id, id) = (void *)objc_msgSend;
+    return sendBool(handler, selector, handler.panGesture, nativePan);
+}
+
+@interface YTMUTestGestureFixture : NSObject
+@property (nonatomic, strong) YTMUTestFixture *visual;
+@property (nonatomic, strong) YTMUNativeMiniPlayerVisualContext *context;
+@property (nonatomic, strong) UIPanGestureRecognizer *dismissPan;
+@property (nonatomic, strong) UIPanGestureRecognizer *nativePan;
+@property (nonatomic, strong) YTMWatchPageLayoutControllerImpl *layoutController;
+@property (nonatomic, strong) UITouch *touch;
+@end
+@implementation YTMUTestGestureFixture @end
+
+static YTMUTestGestureFixture *gestureFixture(void) {
+    YTMUTestGestureFixture *f = [YTMUTestGestureFixture new];
+    f.visual = fixture();
+    testVisualContext = [YTMUNativeMiniPlayerVisualContext new];
+    f.context = testVisualContext;
+    testVisualContext.window = [UIWindow new];
+    testVisualContext.window.bounds = CGRectMake(0, 0, 390, 844);
+    testVisualContext.containerView = [UIView new];
+    testVisualContext.containerView.frame = CGRectMake(0, 697, 390, 64);
+    testVisualContext.pivotBarView = [UIView new];
+    testVisualContext.pivotBarView.frame = CGRectMake(0, 761, 390, 83);
+    testVisualContext.cardFrameInWindow = testVisualContext.containerView.frame;
+    f.visual.root.window = testVisualContext.window;
+    f.visual.root.superview = testVisualContext.containerView;
+    f.dismissPan = [UIPanGestureRecognizer new];
+    f.dismissPan.view = f.visual.mini;
+    f.dismissPan.testVelocity = CGPointMake(0, 200);
+    f.visual.handler.panGesture = f.dismissPan;
+    f.layoutController = [YTMWatchPageLayoutControllerImpl new];
+    f.nativePan = [UIPanGestureRecognizer new];
+    f.nativePan.view = testVisualContext.containerView;
+    f.nativePan.delegate = f.layoutController;
+    f.touch = [UITouch new]; f.touch.view = f.visual.mini;
+    f.touch.testLocation = CGPointMake(120, 729);
+    CHECK(YTMUResolveNativeMiniPlayerVisualContext(
+        f.visual.controller, f.visual.mini, NULL) == f.context);
+    return f;
+}
+
+static void testFirstNativeContainerPanWaitsForCardDismissal(void) {
+    YTMUTestGestureFixture *f = gestureFixture();
+    // Dependency queries can precede the first nonzero velocity sample.
+    f.dismissPan.testVelocity = CGPointZero;
+    CHECK(nativePanMustWait(f.visual.handler, f.nativePan));
+    f.dismissPan.testVelocity = CGPointMake(0, 200);
+    CHECK([f.visual.handler gestureRecognizerShouldBegin:f.dismissPan]);
+    CHECK(nativePanMustWait(f.visual.handler, f.nativePan));
+    CHECK(f.visual.handler.animationSnapshot == nil); // No UI changes during arbitration.
+    CHECK(f.visual.root.layer.opacity == 1);
+}
+
+static void testNewNativePanIsRecognizedWithoutRelaunch(void) {
+    YTMUTestGestureFixture *f = gestureFixture();
+    UIPanGestureRecognizer *replacement = [UIPanGestureRecognizer new];
+    replacement.view = f.nativePan.view; replacement.delegate = f.layoutController;
+    CHECK(nativePanMustWait(f.visual.handler, replacement));
+    CHECK(nativePanMustWait(f.visual.handler, replacement));
+    CHECK(f.visual.handler.panGesture == f.dismissPan);
+}
+
+static void testForeignAndQueueGesturesAreNotMadeToWait(void) {
+    YTMUTestGestureFixture *f = gestureFixture();
+    NSObject *foreignDelegate = [NSObject new]; f.nativePan.delegate = foreignDelegate;
+    CHECK(!nativePanMustWait(f.visual.handler, f.nativePan));
+    f.nativePan.delegate = f.layoutController;
+    UIView *foreignContainer = [UIView new]; f.nativePan.view = foreignContainer;
+    CHECK(!nativePanMustWait(f.visual.handler, f.nativePan));
+    UIScrollView *queue = [UIScrollView new]; queue.superview = f.visual.mini;
+    queue.panGestureRecognizer = [UIPanGestureRecognizer new];
+    queue.panGestureRecognizer.view = queue;
+    CHECK(!nativePanMustWait(f.visual.handler, queue.panGestureRecognizer));
+    CHECK([f.visual.handler gestureRecognizer:f.dismissPan
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:queue.panGestureRecognizer]);
+    CHECK(![f.visual.handler gestureRecognizer:f.dismissPan
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:f.nativePan]);
+}
+
+static void testUpAndHorizontalGesturesFailWithoutTakingNativeInput(void) {
+    YTMUTestGestureFixture *f = gestureFixture();
+    f.dismissPan.testVelocity = CGPointMake(0, -200);
+    CHECK(![f.visual.handler gestureRecognizerShouldBegin:f.dismissPan]);
+    f.dismissPan.testVelocity = CGPointMake(200, 100);
+    CHECK(![f.visual.handler gestureRecognizerShouldBegin:f.dismissPan]);
+    CHECK(f.visual.handler.animationSnapshot == nil);
+}
+
+static void testOtherOwnersAndSuppressionCannotClaimNativePan(void) {
+    YTMUTestGestureFixture *f = gestureFixture();
+    for (NSNumber *owner in @[@(YTMUPlaybackOwnerNone), @(YTMUPlaybackOwnerOffline),
+                              @(YTMUPlaybackOwnerTransitioning)]) {
+        YTMUPlaybackCoordinator.sharedCoordinator.owner = owner.integerValue;
+        CHECK(!nativePanMustWait(f.visual.handler, f.nativePan));
+        CHECK(![f.visual.handler gestureRecognizerShouldBegin:f.dismissPan]);
+    }
+    YTMUPlaybackCoordinator.sharedCoordinator.owner = YTMUPlaybackOwnerNative;
+    YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerSuppressed = YES;
+    CHECK(!nativePanMustWait(f.visual.handler, f.nativePan));
+    CHECK(![f.visual.handler gestureRecognizerShouldBegin:f.dismissPan]);
+}
+
+static void testUnreadyOrFullscreenGeometryDoesNotStealGesture(void) {
+    YTMUTestGestureFixture *f = gestureFixture();
+    // Production geometry rejects non-minimized/native-unready layouts. The
+    // existing pure crop suite tests the real frame/height rejection itself.
+    testVisualContext = nil;
+    CHECK(!nativePanMustWait(f.visual.handler, f.nativePan));
+    CHECK(![f.visual.handler gestureRecognizerShouldBegin:f.dismissPan]);
+    CHECK(![f.visual.handler gestureRecognizer:f.dismissPan shouldReceiveTouch:f.touch]);
+}
+
+static void testOnlyCardTouchesEnterDismissRecognizer(void) {
+    YTMUTestGestureFixture *f = gestureFixture();
+    CHECK([f.visual.handler gestureRecognizer:f.dismissPan shouldReceiveTouch:f.touch]);
+    for (NSValue *point in @[[NSValue valueWithPoint:NSMakePoint(120, 100)],
+                             [NSValue valueWithPoint:NSMakePoint(120, 790)],
+                             [NSValue valueWithPoint:NSMakePoint(120, 825)]]) {
+        NSPoint p = point.pointValue; f.touch.testLocation = CGPointMake(p.x, p.y);
+        CHECK(![f.visual.handler gestureRecognizer:f.dismissPan shouldReceiveTouch:f.touch]);
+    }
+    CHECK(f.visual.root.layer.opacity == 1 && f.visual.root.alpha == 1);
+}
+
+static void testControlAndVoiceOverInputRemainNative(void) {
+    YTMUTestGestureFixture *f = gestureFixture();
+    UIControl *button = [UIControl new]; button.superview = f.visual.mini;
+    UIView *buttonLabel = [UIView new]; buttonLabel.superview = button;
+    f.touch.view = buttonLabel;
+    CHECK(![f.visual.handler gestureRecognizer:f.dismissPan shouldReceiveTouch:f.touch]);
+    f.touch.view = f.visual.mini; testVoiceOverRunning = YES;
+    CHECK(![f.visual.handler gestureRecognizer:f.dismissPan shouldReceiveTouch:f.touch]);
+    CHECK(!nativePanMustWait(f.visual.handler, f.nativePan));
 }
 
 static void testFirstLaunchCallbacksLeaveNativeFullscreenOpacityAlone(void) {
@@ -337,8 +527,16 @@ int main(void) {
         testInteractionRestoreWaitsForOfflineSuppressionToEnd();
         testStaleInteractionRestoreDoesNotTouchNewPresentation();
         testConfirmedEmptyCoverRestoresOnlyBeforeNewNativePlayback();
+        testFirstNativeContainerPanWaitsForCardDismissal();
+        testNewNativePanIsRecognizedWithoutRelaunch();
+        testForeignAndQueueGesturesAreNotMadeToWait();
+        testUpAndHorizontalGesturesFailWithoutTakingNativeInput();
+        testOtherOwnersAndSuppressionCannotClaimNativePan();
+        testUnreadyOrFullscreenGeometryDoesNotStealGesture();
+        testOnlyCardTouchesEnterDismissRecognizer();
+        testControlAndVoiceOverInputRemainNative();
         if (failures) { fprintf(stderr, "%d native visual-state assertion(s) failed\n", failures); return 1; }
-        puts("Native mini-player visual-state tests passed (14 scenarios)");
+        puts("Native mini-player visual-state and gesture-delegate tests passed (22 scenarios)");
     }
     return 0;
 }

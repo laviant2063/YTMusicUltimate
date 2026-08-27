@@ -83,6 +83,7 @@ xcrun clang \
   -Wall -Wextra -Werror \
   -framework Foundation -framework CoreGraphics \
   "$build_root/native-visual-state-tests.m" \
+  "$repo_root/Source/Offline/YTMUMiniPlayerSwipePolicy.m" \
   -I"$repo_root/Source/Offline" \
   -o "$build_root/native-visual-state-tests"
 

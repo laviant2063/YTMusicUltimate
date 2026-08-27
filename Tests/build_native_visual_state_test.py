@@ -26,6 +26,9 @@ required = {
     "cancelSwipeForExternalStateChange",
     "nativePlaybackWillStart",
     "playbackOwnershipDidChange",
+    "nativeSwipeCanContinue",
+    "gestureRecognizerShouldBegin",
+    "gestureRecognizer",
 }
 optional = {"restoreOwnedInteraction", "disableInteractionAfterFailedCollapse", "coverConfirmedEmptyShell"}
 starts = list(re.finditer(r"^-\s*\([^\n]+?\)\s*(\w+)", implementation, re.MULTILINE))
