@@ -638,7 +638,55 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         if ([view isKindOfClass:UIControl.class]) return NO;
         view = view.superview;
     }
-    return !UIAccessibilityIsVoiceOverRunning();
+    if (UIAccessibilityIsVoiceOverRunning()) return NO;
+    if (![self nativeSwipeCanContinue]) {
+        [self logVisualState:@"touch-owner-or-controller-not-ready"];
+        return NO;
+    }
+
+    // miniPlayerView can have screen-sized bounds. Accept touches only in the
+    // existing, verified minimized-card crop, never in the watch page or pivot.
+    NSString *failureReason = nil;
+    YTMUNativeMiniPlayerVisualContext *context =
+        YTMUResolveNativeMiniPlayerVisualContext(self.miniPlayerController,
+                                                 self.miniPlayerView, &failureReason);
+    if (context == nil) {
+        [self logVisualState:failureReason ?: @"touch-card-not-ready"];
+        return NO;
+    }
+    return CGRectContainsPoint(context.cardFrameInWindow,
+                               [touch locationInView:context.window]);
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+    shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
+    if (gestureRecognizer != self.panGesture
+        || other == self.panGesture
+        || ![other isKindOfClass:UIPanGestureRecognizer.class]
+        || UIAccessibilityIsVoiceOverRunning()
+        || ![self nativeSwipeCanContinue]) {
+        return NO;
+    }
+    // 9.14.2 setupGesturesOnWatchView: installs a layout pan on _containerView.
+    // It competes with this child pan before either handler reaches Began.
+    // Use UIKit's dynamic failure requirement, not recognizer install order or
+    // a native delegate/target replacement. Re-created native pans are handled
+    // on the next touch without caching their first-launch identities.
+    Class layoutClass = NSClassFromString(@"YTMWatchPageLayoutControllerImpl");
+    if (layoutClass == Nil || ![(id)other.delegate isKindOfClass:layoutClass]) return NO;
+    YTMUNativeMiniPlayerVisualContext *context =
+        YTMUResolveNativeMiniPlayerVisualContext(self.miniPlayerController,
+                                                 self.miniPlayerView, NULL);
+    if (context == nil
+        || other.view != context.containerView
+        || ![self.miniPlayerView isDescendantOfView:other.view]) {
+        return NO;
+    }
+    // This query can precede a nonzero velocity sample. Direction is checked
+    // by shouldBegin below; upward/horizontal input fails our pan and releases
+    // the native layout pan. No global or queue-scroll dependency is installed.
+    [self logVisualState:@"native-watch-pan-waits-for-card-dismissal"];
+    return YES;
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
@@ -650,6 +698,15 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
     }
     if (![self nativeSwipeCanContinue]) {
         [self logVisualState:@"gesture-owner-or-controller-not-ready"];
+        return NO;
+    }
+
+    // Fail before UIKit recognizes this pan if native layout is not ready.
+    // Beginning and then abandoning a gesture would already block native input.
+    NSString *failureReason = nil;
+    if (YTMUResolveNativeMiniPlayerVisualContext(self.miniPlayerController,
+                                                self.miniPlayerView, &failureReason) == nil) {
+        [self logVisualState:failureReason ?: @"gesture-card-not-ready"];
         return NO;
     }
 
