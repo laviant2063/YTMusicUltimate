@@ -216,6 +216,111 @@ static void testStaleAnimationCompletionCannotOverwriteANewSession(void) {
     deferAnimations = NO; deferredCompletion = nil;
 }
 
+static void testAlreadyHiddenOpacityIsNotClaimedByTheSwipe(void) {
+    YTMUTestFixture *f = fixture();
+    f.root.layer.opacity = 0; f.root.layer.opacityWriteCount = 0;
+    [f.handler coverNativeViews:@[f.root]];
+    CHECK(f.handler.coveredNativeViews.count == 0);
+    [f.handler nativePlaybackWillStart:nil];
+    CHECK(f.root.layer.opacity == 0 && f.root.layer.opacityWriteCount == 0);
+}
+
+static void testDuplicateCoverKeepsTheImmediatePreOverrideValue(void) {
+    YTMUTestFixture *f = fixture();
+    f.root.layer.opacity = 0.6f;
+    [f.handler coverNativeViews:@[f.root]];
+    [f.handler coverNativeViews:@[f.root, f.mini]];
+    CHECK(f.handler.coveredNativeViews.count == 2);
+    [f.handler restoreCoveredNativeViews];
+    CHECK(f.root.layer.opacity == 0.6f && f.mini.layer.opacity == 1);
+}
+
+static void testOldVisualGenerationCannotRestoreOpacity(void) {
+    YTMUTestFixture *f = fixture();
+    [f.handler coverNativeViews:@[f.root]];
+    f.handler.nativeVisualGeneration++;
+    f.root.layer.opacityWriteCount = 0;
+    [f.handler restoreCoveredNativeViews];
+    CHECK(f.root.layer.opacity == 0 && f.root.layer.opacityWriteCount == 0);
+    CHECK(f.handler.coveredNativeViews.count == 0);
+}
+
+static void testReplacedRootIsNotTouchedByOldHandler(void) {
+    YTMUTestFixture *f = fixture();
+    [f.handler coverNativeViews:@[f.root]];
+    UIView *replacement = [UIView new];
+    replacement.layer.opacity = 0.2f; replacement.layer.opacityWriteCount = 0;
+    f.controller.view = replacement;
+    f.root.layer.opacityWriteCount = 0;
+    [f.handler restoreSwipeAnimated:NO];
+    CHECK(f.root.layer.opacityWriteCount == 0);
+    CHECK(replacement.layer.opacity == 0.2f && replacement.layer.opacityWriteCount == 0);
+    CHECK(f.handler.coveredNativeViews.count == 0);
+}
+
+static void testInteractionRestoresOnlyAnOwnedDisable(void) {
+    YTMUTestFixture *f = fixture();
+    f.root.userInteractionEnabled = NO;
+    [f.handler disableInteractionAfterFailedCollapse];
+    CHECK(!f.handler.interactionDisabledAfterFailedCollapse);
+    [f.handler restoreOwnedInteraction];
+    CHECK(!f.root.userInteractionEnabled);
+
+    f.root.userInteractionEnabled = YES;
+    [f.handler disableInteractionAfterFailedCollapse];
+    CHECK(!f.root.userInteractionEnabled && f.handler.interactionDisabledAfterFailedCollapse);
+    [f.handler restoreOwnedInteraction];
+    CHECK(f.root.userInteractionEnabled && !f.handler.interactionDisabledAfterFailedCollapse);
+    f.root.userInteractionEnabled = NO;
+    [f.handler restoreOwnedInteraction];
+    CHECK(!f.root.userInteractionEnabled);
+}
+
+static void testInteractionRestoreWaitsForOfflineSuppressionToEnd(void) {
+    YTMUTestFixture *f = fixture();
+    [f.handler disableInteractionAfterFailedCollapse];
+    YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerSuppressed = YES;
+    YTMUPlaybackCoordinator.sharedCoordinator.owner = YTMUPlaybackOwnerOffline;
+    [f.handler nativePlaybackWillStart:nil];
+    CHECK(!f.root.userInteractionEnabled && f.handler.interactionDisabledAfterFailedCollapse);
+    YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerSuppressed = NO;
+    YTMUPlaybackCoordinator.sharedCoordinator.owner = YTMUPlaybackOwnerNative;
+    [f.handler playbackOwnershipDidChange:nil];
+    CHECK(f.root.userInteractionEnabled && !f.handler.interactionDisabledAfterFailedCollapse);
+}
+
+static void testStaleInteractionRestoreDoesNotTouchNewPresentation(void) {
+    YTMUTestFixture *f = fixture();
+    [f.handler disableInteractionAfterFailedCollapse];
+    f.handler.nativeVisualGeneration++;
+    [f.handler restoreOwnedInteraction];
+    CHECK(!f.root.userInteractionEnabled && !f.handler.interactionDisabledAfterFailedCollapse);
+}
+
+static void testConfirmedEmptyCoverRestoresOnlyBeforeNewNativePlayback(void) {
+    YTMUTestFixture *f = fixture();
+    [f.handler coverConfirmedEmptyShell];
+    CHECK(f.handler.coveredNativeViews.count == 0);
+    YTMUPlaybackCoordinator.sharedCoordinator.owner = YTMUPlaybackOwnerNone;
+    YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerVisualShellCollapsed = YES;
+    f.root.layer.opacity = 0.8f;
+    [f.handler coverConfirmedEmptyShell];
+    [f.handler coverConfirmedEmptyShell];
+    CHECK(f.root.layer.opacity == 0 && f.handler.coveredNativeViews.count == 1);
+    [f.handler restoreSwipeAnimated:NO];
+    CHECK(f.root.layer.opacity == 0);
+    YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerVisualShellCollapsed = NO;
+    [f.handler nativePlaybackWillStart:nil];
+    CHECK(f.root.layer.opacity == 0.8f && f.handler.coveredNativeViews.count == 0);
+    // Native fullscreen owns the subsequent zero; a post-start callback must
+    // not interpret that change as another handler-owned override.
+    f.root.layer.opacity = 0; f.root.layer.opacityWriteCount = 0;
+    [f.handler nativePlaybackWillStart:nil];
+    YTMUPlaybackCoordinator.sharedCoordinator.owner = YTMUPlaybackOwnerNative;
+    [f.handler playbackOwnershipDidChange:nil];
+    CHECK(f.root.layer.opacity == 0 && f.root.layer.opacityWriteCount == 0);
+}
+
 int main(void) {
     @autoreleasepool {
         testFirstLaunchCallbacksLeaveNativeFullscreenOpacityAlone();
@@ -224,8 +329,16 @@ int main(void) {
         testLaterNativeOpacityWriteWinsOverOldOverride();
         testDuplicateCleanupCannotResurrectAnEmptyShell();
         testStaleAnimationCompletionCannotOverwriteANewSession();
+        testAlreadyHiddenOpacityIsNotClaimedByTheSwipe();
+        testDuplicateCoverKeepsTheImmediatePreOverrideValue();
+        testOldVisualGenerationCannotRestoreOpacity();
+        testReplacedRootIsNotTouchedByOldHandler();
+        testInteractionRestoresOnlyAnOwnedDisable();
+        testInteractionRestoreWaitsForOfflineSuppressionToEnd();
+        testStaleInteractionRestoreDoesNotTouchNewPresentation();
+        testConfirmedEmptyCoverRestoresOnlyBeforeNewNativePlayback();
         if (failures) { fprintf(stderr, "%d native visual-state assertion(s) failed\n", failures); return 1; }
-        puts("Native mini-player visual-state tests passed (6 scenarios)");
+        puts("Native mini-player visual-state tests passed (14 scenarios)");
     }
     return 0;
 }

@@ -150,6 +150,37 @@ assert_contains "$native_adapter" "prepareNativeMiniPlayerForPlaybackStart" \
 assert_contains "$playback_hooks" "YTMUNativePlaybackWillStart" \
   "native play entry points do not announce playback before %orig"
 
+# First-launch callbacks must not restore constructor-time native UI values.
+# The executable visual-state harness tests actual production methods; these
+# checks additionally guard the initializer, rejected-begin and install wiring.
+for stale_property in visualRootOriginalHidden visualRootOriginalAlpha \
+                      visualRootOriginalTransform visualRootOriginalLayerOpacity; do
+  assert_not_contains "$native_swipe" "$stale_property" \
+    "native presentation state is still captured independently of a swipe override"
+done
+assert_contains "$native_swipe" "coveredNativeGeneration == self.nativeVisualGeneration" \
+  "opacity restoration is not scoped to the current native presentation"
+assert_contains "$native_swipe" "coveredNativeRootView == self.miniPlayerController.view" \
+  "opacity restoration can modify a replaced controller root"
+assert_contains "$native_swipe" "coverConfirmedEmptyShell" \
+  "empty-shell lifecycle coverage is not tracked by the same visual ownership path"
+assert_not_contains "$native_swipe" "YTMUSetNativeMiniPlayerViewsLayerOpacity(@[visualRootView]" \
+  "registration hides a native root without recording override ownership"
+assert_not_contains "$native_swipe" "view.hidden = self." \
+  "cleanup writes native hidden state that the swipe does not own"
+assert_not_contains "$native_swipe" "view.alpha = self." \
+  "cleanup writes native alpha that the swipe does not own"
+assert_not_contains "$native_swipe" "view.transform = self." \
+  "cleanup writes native transform that the swipe does not own"
+assert_contains "$native_swipe" "card-height-or-pivot-adjacency" \
+  "first-launch crop rejection lacks a diagnostic reason"
+assert_contains "$native_swipe" "targetMatches=" \
+  "first-launch diagnostics cannot compare installed and live mini-player identities"
+assert_contains "$native_swipe" "[existing isAttachedToMiniPlayerView:miniPlayerView]" \
+  "repeated registration no longer reuses the existing recognizer on the same view"
+assert_contains "$native_swipe" "[existing invalidate]" \
+  "a replaced mini-player view can retain a stale handler and recognizer"
+
 # Empty-shell removal must use the verified 9.14.2 layout controller API, not
 # translated labels, arbitrary child indices, or removal of native views.
 assert_contains "$native_adapter" "_watchPageLayoutController" \

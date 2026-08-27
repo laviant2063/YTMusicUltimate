@@ -49,6 +49,16 @@ static BOOL YTMURectIsFiniteAndVisible(CGRect rect) {
         && isfinite(CGRectGetHeight(rect));
 }
 
+static NSString *YTMUNativeViewDiagnostic(UIView *view) {
+    if (view == nil) return @"nil";
+    CGRect windowFrame = view.window == nil ? CGRectNull
+        : [view convertRect:view.bounds toView:view.window];
+    return [NSString stringWithFormat:@"%@:%p frame=%@ bounds=%@ windowRect=%@ hidden=%d alpha=%.3f opacity=%.3f",
+            NSStringFromClass(view.class), (__bridge void *)view,
+            NSStringFromCGRect(view.frame), NSStringFromCGRect(view.bounds),
+            NSStringFromCGRect(windowFrame), view.hidden, view.alpha, view.layer.opacity];
+}
+
 static BOOL YTMUMethodHasEncoding(id object, SEL selector, const char *expectedEncoding) {
     if (object == nil || selector == NULL || ![object respondsToSelector:selector]) return NO;
     Method method = class_getInstanceMethod([object class], selector);
@@ -222,9 +232,17 @@ static BOOL YTMUViewIsOrderedBelowSibling(UIView *view, UIView *sibling) {
 @implementation YTMUNativeMiniPlayerVisualContext
 @end
 
+static YTMUNativeMiniPlayerVisualContext *YTMURejectNativeVisualContext(
+    NSString **failureReason, NSString *reason) {
+    if (failureReason != NULL) *failureReason = reason;
+    return nil;
+}
+
 static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualContext(
     UIViewController *controller,
-    UIView *miniPlayerView) {
+    UIView *miniPlayerView,
+    NSString **failureReason) {
+    if (failureReason != NULL) *failureReason = nil;
     Class miniPlayerControllerClass = NSClassFromString(@"YTMMiniPlayerViewController");
     Class watchControllerClass = NSClassFromString(@"YTMWatchViewController");
     Class watchViewClass = NSClassFromString(@"YTMWatchView");
@@ -239,14 +257,14 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         || gradientClass == Nil
         || ![controller isKindOfClass:miniPlayerControllerClass]
         || !controller.isViewLoaded) {
-        return nil;
+        return YTMURejectNativeVisualContext(failureReason, @"controller-or-private-class-unavailable");
     }
 
     UIView *controllerRootView = controller.view;
     if (controllerRootView == nil
         || (miniPlayerView != controllerRootView
             && ![miniPlayerView isDescendantOfView:controllerRootView])) {
-        return nil;
+        return YTMURejectNativeVisualContext(failureReason, @"controller-root-identity");
     }
 
     id watchController = YTMUObjectReturnedByVerifiedSelector(
@@ -256,7 +274,7 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
     UIView *watchMiniPlayerView = YTMUObjectReturnedByVerifiedSelector(
         watchView, @"miniPlayerView", miniPlayerViewClass);
     if (watchController == nil || watchView == nil || watchMiniPlayerView != miniPlayerView) {
-        return nil;
+        return YTMURejectNativeVisualContext(failureReason, @"watch-miniplayer-identity");
     }
 
     UIWindow *window = miniPlayerView.window;
@@ -264,7 +282,7 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         || controllerRootView.window != window
         || watchView.window != window
         || [controllerRootView isKindOfClass:UITabBar.class]) {
-        return nil;
+        return YTMURejectNativeVisualContext(failureReason, @"window-not-attached");
     }
 
     UIView *containerView = YTMUViewFromVerifiedIvar(
@@ -283,20 +301,20 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         || pivotBarView == nil
         || pivotBarView.window != window
         || pivotBarView.hidden) {
-        return nil;
+        return YTMURejectNativeVisualContext(failureReason, @"native-layout-views-unavailable");
     }
 
     CGRect containerFrame = [containerView convertRect:containerView.bounds toView:window];
     CGRect pivotFrame = [pivotBarView convertRect:pivotBarView.bounds toView:window];
     if (!YTMURectIsFiniteAndVisible(containerFrame)
         || !YTMURectIsFiniteAndVisible(pivotFrame)) {
-        return nil;
+        return YTMURejectNativeVisualContext(failureReason, @"native-frame-not-ready");
     }
 
     double nativeMinimizedHeight = 0.0;
     if (!YTMUClassDoubleReturnedByVerifiedSelector(
             watchViewClass, @"minimizedPlayerHeight", &nativeMinimizedHeight)) {
-        return nil;
+        return YTMURejectNativeVisualContext(failureReason, @"minimized-height-abi");
     }
     YTMUMiniPlayerCropRect resolvedCrop;
     if (!YTMUNativeMiniPlayerResolveCardCrop(
@@ -306,12 +324,12 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
             nativeMinimizedHeight,
             YTMUNativeVisualGeometryTolerance,
             &resolvedCrop)) {
-        return nil;
+        return YTMURejectNativeVisualContext(failureReason, @"card-height-or-pivot-adjacency");
     }
     CGRect cardFrame = YTMUCGRectFromCropRect(resolvedCrop);
     if (!YTMURectIsFiniteAndVisible(cardFrame)
         || CGRectIntersectsRect(cardFrame, pivotFrame)) {
-        return nil;
+        return YTMURejectNativeVisualContext(failureReason, @"card-pivot-overlap");
     }
 
     NSMutableArray<UIView *> *participants = [NSMutableArray array];
@@ -348,7 +366,7 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
                                             cardFrame);
     if (![participants containsObject:containerView]
         || ![participants containsObject:miniPlayerView]) {
-        return nil;
+        return YTMURejectNativeVisualContext(failureReason, @"card-participant-containment");
     }
 
     YTMUNativeMiniPlayerVisualContext *context =
@@ -377,13 +395,20 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
 @property (nonatomic, strong) UIView *interactionBlocker;
 @property (nonatomic, copy) NSArray<UIView *> *coveredNativeViews;
 @property (nonatomic, copy) NSArray<NSNumber *> *coveredNativeViewLayerOpacities;
+// Populated only immediately before this handler changes native opacity.
+// Presentation callbacks with no owned override must never write native UI.
+@property (nonatomic, weak) UIViewController *coveredNativeController;
+@property (nonatomic, weak) UIView *coveredNativeRootView;
+@property (nonatomic, assign) NSUInteger coveredNativeGeneration;
 @property (nonatomic, assign) CGAffineTransform animationOriginalTransform;
 @property (nonatomic, assign) CGFloat animationOriginalAlpha;
-@property (nonatomic, assign) BOOL visualRootOriginalHidden;
-@property (nonatomic, assign) CGFloat visualRootOriginalAlpha;
-@property (nonatomic, assign) CGAffineTransform visualRootOriginalTransform;
 @property (nonatomic, assign) BOOL visualRootOriginalInteractionEnabled;
-@property (nonatomic, assign) float visualRootOriginalLayerOpacity;
+@property (nonatomic, weak) UIViewController *interactionOverrideController;
+@property (nonatomic, weak) UIView *interactionOverrideView;
+@property (nonatomic, assign) NSUInteger interactionOverrideGeneration;
+@property (nonatomic, assign) NSUInteger nativeVisualGeneration;
+@property (nonatomic, copy) NSString *lastDiagnosticReason;
+@property (nonatomic, assign) CFAbsoluteTime lastDiagnosticTime;
 @property (nonatomic, assign) CGRect visualRootBoundsAtSwipeStart;
 @property (nonatomic, assign) CGRect animationWindowBoundsAtSwipeStart;
 @property (nonatomic, assign) CGRect animationCardFrameInWindow;
@@ -406,6 +431,10 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
 - (BOOL)beginUnifiedSwipeAnimation;
 - (void)coverNativeViews:(NSArray<UIView *> *)views;
 - (void)restoreCoveredNativeViews;
+- (void)coverConfirmedEmptyShell;
+- (void)disableInteractionAfterFailedCollapse;
+- (void)restoreOwnedInteraction;
+- (void)logVisualState:(NSString *)reason;
 - (void)discardAnimationSnapshot;
 - (void)restoreVisualRootIncludingNativeState:(BOOL)restoreNativeState;
 - (void)restoreSwipeAnimated:(BOOL)animated;
@@ -431,11 +460,6 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         _miniPlayerController = controller;
         _miniPlayerView = miniPlayerView;
         _visualRootView = visualRootView;
-        _visualRootOriginalHidden = visualRootView.hidden;
-        _visualRootOriginalAlpha = visualRootView.alpha;
-        _visualRootOriginalTransform = visualRootView.transform;
-        _visualRootOriginalInteractionEnabled = visualRootView.userInteractionEnabled;
-        _visualRootOriginalLayerOpacity = visualRootView.layer.opacity;
 
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
             initWithTarget:self action:@selector(handlePan:)];
@@ -484,6 +508,7 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         && !YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerSuppressed;
     [self restoreVisualRootIncludingNativeState:restoreNativeState];
     [self discardAnimationSnapshot];
+    self.nativeVisualGeneration++;
     UIPanGestureRecognizer *pan = self.panGesture;
     pan.delegate = nil;
     [pan.view removeGestureRecognizer:pan];
@@ -501,28 +526,56 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
     if (YTMUPlaybackCoordinator.sharedCoordinator.owner != YTMUPlaybackOwnerNative) return;
     UIView *view = self.visualRootView;
     if (view == nil || self.miniPlayerView == nil) return;
-    if (self.swipeInProgress || self.swipeRestoring || self.swipeDismissCommitted) {
+    [self logVisualState:@"presentation-callback"];
+    if (self.swipeInProgress || self.swipeRestoring || self.swipeDismissCommitted
+        || self.animationSnapshot != nil || self.coveredNativeViews.count > 0
+        || self.interactionDisabledAfterFailedCollapse) {
         [self restoreSwipeAnimated:NO];
     }
     self.swipeGeneration++;
-    [self restoreCoveredNativeViews];
-    [self discardAnimationSnapshot];
-    [self restoreVisualRootIncludingNativeState:NO];
-    if (self.interactionDisabledAfterFailedCollapse) {
-        view.userInteractionEnabled = self.visualRootOriginalInteractionEnabled;
-        self.interactionDisabledAfterFailedCollapse = NO;
-    }
+    self.nativeVisualGeneration++;
     self.swipeInProgress = NO;
     self.swipeRestoring = NO;
     self.swipeDismissCommitted = NO;
     self.sessionEndRequestStarted = NO;
     self.ownerLeftNativeDuringCommit = NO;
     self.visualRootCoveredAfterConfirmedSessionEnd = NO;
-    self.visualRootOriginalHidden = view.hidden;
-    self.visualRootOriginalAlpha = view.alpha;
-    self.visualRootOriginalTransform = view.transform;
-    self.visualRootOriginalInteractionEnabled = view.userInteractionEnabled;
-    self.visualRootOriginalLayerOpacity = view.layer.opacity;
+}
+
+- (void)logVisualState:(NSString *)reason {
+    if (!NSThread.isMainThread) return;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if ([self.lastDiagnosticReason isEqualToString:reason]
+        && now - self.lastDiagnosticTime < 1.0) return;
+    self.lastDiagnosticReason = reason;
+    self.lastDiagnosticTime = now;
+    BOOL logged = YTMUPerformObjectiveCBlockSafely(^{
+        UIViewController *controller = self.miniPlayerController;
+        UIView *liveMini = YTMUObjectReturnedByVerifiedSelector(controller, @"miniPlayerView", UIView.class);
+        id watchController = YTMUObjectReturnedByVerifiedSelector(
+            controller, @"parentResponder", NSClassFromString(@"YTMWatchViewController"));
+        UIView *watchView = YTMUObjectReturnedByVerifiedSelector(
+            watchController, @"watchView", NSClassFromString(@"YTMWatchView"));
+        UIView *container = YTMUViewFromVerifiedIvar(watchView, "_containerView",
+            "@\"YTMGradientBackgroundView\"", NSClassFromString(@"YTMGradientBackgroundView"));
+        UIView *pivot = YTMUObjectReturnedByVerifiedSelector(
+            watchView, @"pivotBarView", NSClassFromString(@"YTPivotBarView"));
+        double minimizedHeight = 0;
+        YTMUClassDoubleReturnedByVerifiedSelector(NSClassFromString(@"YTMWatchView"),
+                                                   @"minimizedPlayerHeight", &minimizedHeight);
+        NSLog(@"[YTMusicUltimate][NativeMiniSwipe] reason=%@ controller=%@:%p owner=%ld suppressed=%d ownsOpacity=%lu ownsInteraction=%d gestureGen=%lu visualGen=%lu targetMatches=%d nativeHeight=%.2f crop=%@ root={%@} installed={%@} live={%@} container={%@} pivot={%@}",
+              reason, NSStringFromClass(controller.class), (__bridge void *)controller,
+              (long)YTMUPlaybackCoordinator.sharedCoordinator.owner,
+              YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerSuppressed,
+              (unsigned long)self.coveredNativeViews.count, self.interactionDisabledAfterFailedCollapse,
+              (unsigned long)self.swipeGeneration, (unsigned long)self.nativeVisualGeneration,
+              liveMini != nil && liveMini == self.miniPlayerView && liveMini == self.panGesture.view,
+              minimizedHeight, NSStringFromCGRect(self.animationCardFrameInWindow),
+              YTMUNativeViewDiagnostic(self.visualRootView), YTMUNativeViewDiagnostic(self.miniPlayerView),
+              YTMUNativeViewDiagnostic(liveMini), YTMUNativeViewDiagnostic(container),
+              YTMUNativeViewDiagnostic(pivot));
+    }, NULL);
+    if (!logged) NSLog(@"[YTMusicUltimate][NativeMiniSwipe] reason=%@ diagnostic-unavailable", reason);
 }
 
 - (BOOL)nativeSwipeCanContinue {
@@ -551,7 +604,7 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
     UIWindow *animationWindow = self.animationWindow;
     YTMUNativeMiniPlayerVisualContext *context =
         YTMUResolveNativeMiniPlayerVisualContext(self.miniPlayerController,
-                                                 self.miniPlayerView);
+                                                 self.miniPlayerView, NULL);
     CGRect occlusionFrameInWindow = occlusionView == nil || animationWindow == nil
         ? CGRectNull
         : [occlusionView convertRect:occlusionView.bounds toView:animationWindow];
@@ -592,8 +645,11 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
     if (gestureRecognizer != self.panGesture
         || self.swipeInProgress
         || self.swipeRestoring
-        || self.swipeDismissCommitted
-        || ![self nativeSwipeCanContinue]) {
+        || self.swipeDismissCommitted) {
+        return NO;
+    }
+    if (![self nativeSwipeCanContinue]) {
+        [self logVisualState:@"gesture-owner-or-controller-not-ready"];
         return NO;
     }
 
@@ -621,9 +677,14 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
 - (BOOL)beginUnifiedSwipeAnimation {
     UIView *miniPlayerView = self.miniPlayerView;
     UIView *visualRootView = self.visualRootView;
+    NSString *failureReason = nil;
     YTMUNativeMiniPlayerVisualContext *context =
         YTMUResolveNativeMiniPlayerVisualContext(self.miniPlayerController,
-                                                 miniPlayerView);
+                                                 miniPlayerView, &failureReason);
+    if (context == nil) {
+        [self logVisualState:failureReason ?: @"visual-context-unavailable"];
+        return NO;
+    }
     UIWindow *window = context.window;
     CGRect cardFrame = context.cardFrameInWindow;
     UIView *commonAncestor = YTMUClosestCommonAncestorForViews(context.containerView,
@@ -645,16 +706,12 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         || !YTMURectIsFiniteAndVisible(cardFrame)
         || (miniPlayerView != visualRootView
             && ![miniPlayerView isDescendantOfView:visualRootView])) {
+        [self logVisualState:@"pivot-branch-or-controller-not-ready"];
         return NO;
     }
 
     [self restoreCoveredNativeViews];
     [self discardAnimationSnapshot];
-    self.visualRootOriginalHidden = visualRootView.hidden;
-    self.visualRootOriginalAlpha = visualRootView.alpha;
-    self.visualRootOriginalTransform = visualRootView.transform;
-    self.visualRootOriginalInteractionEnabled = visualRootView.userInteractionEnabled;
-    self.visualRootOriginalLayerOpacity = visualRootView.layer.opacity;
     self.visualRootBoundsAtSwipeStart = visualRootView.bounds;
     self.animationWindowBoundsAtSwipeStart = window.bounds;
     self.animationCardFrameInWindow = cardFrame;
@@ -664,9 +721,15 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
     UIView *snapshot = [window resizableSnapshotViewFromRect:cardFrame
                                          afterScreenUpdates:NO
                                               withCapInsets:UIEdgeInsetsZero];
-    if (snapshot == nil) return NO;
+    if (snapshot == nil) {
+        [self logVisualState:@"snapshot-unavailable"];
+        return NO;
+    }
     CGRect occlusionFrame = [commonAncestor convertRect:cardFrame fromView:window];
-    if (!YTMURectIsFiniteAndVisible(occlusionFrame)) return NO;
+    if (!YTMURectIsFiniteAndVisible(occlusionFrame)) {
+        [self logVisualState:@"occlusion-frame-invalid"];
+        return NO;
+    }
     UIView *occlusionView = [[UIView alloc] initWithFrame:occlusionFrame];
     occlusionView.backgroundColor = UIColor.clearColor;
     occlusionView.userInteractionEnabled = YES;
@@ -696,6 +759,7 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
     }, NULL);
     if (!placementSucceeded || !placedBelowPivot) {
         [occlusionView removeFromSuperview];
+        [self logVisualState:@"pivot-placement-rejected"];
         return NO;
     }
 
@@ -708,32 +772,96 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
     self.animationOriginalTransform = snapshot.transform;
     self.animationOriginalAlpha = snapshot.alpha;
     [self coverNativeViews:context.visualParticipants];
+    [self logVisualState:@"gesture-visual-override-acquired"];
     return YES;
 }
 
 - (void)coverNativeViews:(NSArray<UIView *> *)views {
     if (views.count == 0) return;
-    [self restoreCoveredNativeViews];
-    NSMutableArray<NSNumber *> *opacities = [NSMutableArray arrayWithCapacity:views.count];
-    for (UIView *view in views) {
-        [opacities addObject:@(view.layer.opacity)];
+    if (self.coveredNativeViews.count > 0
+        && (self.coveredNativeGeneration != self.nativeVisualGeneration
+            || self.coveredNativeRootView != self.visualRootView
+            || self.coveredNativeController != self.miniPlayerController)) {
+        [self restoreCoveredNativeViews];
     }
-    self.coveredNativeViews = [views copy];
+    NSMutableArray<UIView *> *ownedViews = [self.coveredNativeViews mutableCopy]
+        ?: [NSMutableArray array];
+    NSMutableArray<NSNumber *> *opacities = [self.coveredNativeViewLayerOpacities mutableCopy]
+        ?: [NSMutableArray array];
+    NSMutableArray<UIView *> *newlyCoveredViews = [NSMutableArray array];
+    for (UIView *view in views) {
+        if ([ownedViews containsObject:view] || view.layer.opacity == 0.0f) continue;
+        [ownedViews addObject:view];
+        [opacities addObject:@(view.layer.opacity)];
+        [newlyCoveredViews addObject:view];
+    }
+    if (newlyCoveredViews.count == 0) return;
+    self.coveredNativeController = self.miniPlayerController;
+    self.coveredNativeRootView = self.visualRootView;
+    self.coveredNativeGeneration = self.nativeVisualGeneration;
+    self.coveredNativeViews = ownedViews;
     self.coveredNativeViewLayerOpacities = opacities;
-    YTMUSetNativeMiniPlayerViewsLayerOpacity(self.coveredNativeViews, 0.0f);
+    YTMUSetNativeMiniPlayerViewsLayerOpacity(newlyCoveredViews, 0.0f);
 }
 
 - (void)restoreCoveredNativeViews {
     NSArray<UIView *> *views = self.coveredNativeViews;
     NSArray<NSNumber *> *opacities = self.coveredNativeViewLayerOpacities;
+    BOOL ownsCurrentPresentation = self.coveredNativeController != nil
+        && self.coveredNativeController == self.miniPlayerController
+        && self.coveredNativeRootView == self.visualRootView
+        && self.coveredNativeRootView == self.miniPlayerController.view
+        && self.coveredNativeGeneration == self.nativeVisualGeneration;
     self.coveredNativeViews = nil;
     self.coveredNativeViewLayerOpacities = nil;
+    self.coveredNativeController = nil;
+    self.coveredNativeRootView = nil;
+    if (!ownsCurrentPresentation) return;
     NSUInteger count = MIN(views.count, opacities.count);
     [UIView performWithoutAnimation:^{
         for (NSUInteger index = 0; index < count; index++) {
-            views[index].layer.opacity = opacities[index].floatValue;
+            // A later native write takes precedence over our temporary cover.
+            if (views[index].layer.opacity == 0.0f) {
+                views[index].layer.opacity = opacities[index].floatValue;
+            }
         }
     }];
+}
+
+- (void)coverConfirmedEmptyShell {
+    if (!YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerVisualShellCollapsed
+        || YTMUPlaybackCoordinator.sharedCoordinator.owner != YTMUPlaybackOwnerNone
+        || self.visualRootView == nil) return;
+    [self coverNativeViews:@[self.visualRootView]];
+    self.visualRootCoveredAfterConfirmedSessionEnd = self.coveredNativeViews.count > 0;
+}
+
+- (void)disableInteractionAfterFailedCollapse {
+    UIView *view = self.visualRootView;
+    if (view == nil || self.interactionDisabledAfterFailedCollapse
+        || !view.userInteractionEnabled) return;
+    self.visualRootOriginalInteractionEnabled = view.userInteractionEnabled;
+    self.interactionOverrideView = view;
+    self.interactionOverrideController = self.miniPlayerController;
+    self.interactionOverrideGeneration = self.nativeVisualGeneration;
+    self.interactionDisabledAfterFailedCollapse = YES;
+    view.userInteractionEnabled = NO;
+}
+
+- (void)restoreOwnedInteraction {
+    if (!self.interactionDisabledAfterFailedCollapse
+        || YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerSuppressed) return;
+    UIView *view = self.interactionOverrideView;
+    BOOL ownsCurrentPresentation = view != nil && view == self.visualRootView
+        && self.interactionOverrideController == self.miniPlayerController
+        && view == self.miniPlayerController.view
+        && self.interactionOverrideGeneration == self.nativeVisualGeneration;
+    self.interactionDisabledAfterFailedCollapse = NO;
+    self.interactionOverrideView = nil;
+    self.interactionOverrideController = nil;
+    if (ownsCurrentPresentation && !view.userInteractionEnabled) {
+        view.userInteractionEnabled = self.visualRootOriginalInteractionEnabled;
+    }
 }
 
 - (void)discardAnimationSnapshot {
@@ -757,26 +885,14 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
 }
 
 - (void)restoreVisualRootIncludingNativeState:(BOOL)restoreNativeState {
-    UIView *visualRootView = self.visualRootView;
-    if (visualRootView == nil) return;
-    if (restoreNativeState) {
-        visualRootView.hidden = self.visualRootOriginalHidden;
-        visualRootView.alpha = self.visualRootOriginalAlpha;
-        visualRootView.transform = self.visualRootOriginalTransform;
-        visualRootView.userInteractionEnabled = self.visualRootOriginalInteractionEnabled;
-        self.interactionDisabledAfterFailedCollapse = NO;
-    }
+    if (self.coveredNativeViews.count == 0 && !self.interactionDisabledAfterFailedCollapse) return;
     BOOL keepEndedShellCovered = !restoreNativeState
         && (self.visualRootCoveredAfterConfirmedSessionEnd
             || YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerVisualShellCollapsed)
         && YTMUPlaybackCoordinator.sharedCoordinator.owner != YTMUPlaybackOwnerNative;
-    if (keepEndedShellCovered) {
-        YTMUSetNativeMiniPlayerViewsLayerOpacity(self.coveredNativeViews, 0.0f);
-    } else {
+    if (!keepEndedShellCovered) {
         [self restoreCoveredNativeViews];
-        [UIView performWithoutAnimation:^{
-            visualRootView.layer.opacity = self.visualRootOriginalLayerOpacity;
-        }];
+        [self restoreOwnedInteraction];
     }
 }
 
@@ -790,6 +906,7 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
 - (void)restoreSwipeAnimated:(BOOL)animated restoreNativeState:(BOOL)restoreNativeState {
     UIView *animationView = self.animationSnapshot;
     NSUInteger generation = ++self.swipeGeneration;
+    NSUInteger nativeGeneration = self.nativeVisualGeneration;
     self.swipeInProgress = NO;
     self.swipeRestoring = animated;
     self.swipeDismissCommitted = NO;
@@ -803,7 +920,8 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         animationView.alpha = self.animationOriginalAlpha;
     };
     void (^completion)(BOOL) = ^(__unused BOOL finished) {
-        if (generation != self.swipeGeneration) return;
+        if (generation != self.swipeGeneration
+            || nativeGeneration != self.nativeVisualGeneration) return;
         [self restoreVisualRootIncludingNativeState:restoreNativeState];
         [self discardAnimationSnapshot];
         self.swipeRestoring = NO;
@@ -915,15 +1033,12 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         // mini-player viewport now. Restoring their original opacity cannot
         // expose a second animation and leaves the next native session clean.
         [self restoreCoveredNativeViews];
-        self.visualRootView.userInteractionEnabled =
-            self.visualRootOriginalInteractionEnabled;
-        self.interactionDisabledAfterFailedCollapse = NO;
+        [self restoreOwnedInteraction];
     } else {
         // Playback is already confirmed stopped. Keep the original shell
         // visually covered if the version-guarded layout command fails rather
         // than revealing a misleading empty player.
-        self.visualRootView.userInteractionEnabled = NO;
-        self.interactionDisabledAfterFailedCollapse = YES;
+        [self disableInteractionAfterFailedCollapse];
         [self showEndFailure:collapseError];
     }
     // Keep the native root covered while its private dismissal animation
@@ -973,15 +1088,19 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         });
         return;
     }
-    if (self.swipeInProgress || self.swipeRestoring || self.swipeDismissCommitted) {
+    [self logVisualState:@"native-playback-start-callback"];
+    if (self.swipeInProgress || self.swipeRestoring || self.swipeDismissCommitted
+        || self.animationSnapshot != nil || self.coveredNativeViews.count > 0
+        || self.interactionDisabledAfterFailedCollapse) {
         self.panGesture.enabled = NO;
         [self restoreSwipeAnimated:NO restoreNativeState:YES];
         self.panGesture.enabled = YES;
-        return;
     }
     self.swipeGeneration++;
-    if (self.visualRootView.layer.opacity != self.visualRootOriginalLayerOpacity) {
-        [self prepareForPresentation];
+    self.nativeVisualGeneration++;
+    if (self.interactionDisabledAfterFailedCollapse) {
+        // Offline suppression owns interaction until the Native owner callback.
+        self.interactionOverrideGeneration = self.nativeVisualGeneration;
     }
 }
 
@@ -992,8 +1111,8 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
             || (!self.swipeInProgress
                 && !self.swipeRestoring
                 && !self.swipeDismissCommitted
-                && self.visualRootView.layer.opacity
-                    != self.visualRootOriginalLayerOpacity)) {
+                && (self.coveredNativeViews.count > 0
+                    || self.interactionDisabledAfterFailedCollapse))) {
             [self prepareForPresentation];
         }
         return;
@@ -1014,7 +1133,11 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
         case UIGestureRecognizerStateBegan:
             if (![self nativeSwipeCanContinue]
                 || ![self beginUnifiedSwipeAnimation]) {
-                [self restoreSwipeAnimated:NO];
+                // begin only covers native views after a snapshot is installed.
+                // A rejected first-launch layout has no native state to restore.
+                [self discardAnimationSnapshot];
+                self.swipeInProgress = NO;
+                self.swipeRestoring = NO;
                 return;
             }
             self.swipeGeneration++;
@@ -1027,6 +1150,7 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
                 || animationView == nil
                 || ![self unifiedAnimationGeometryIsCurrent]
                 || ![self nativeSwipeCanContinue]) {
+                [self logVisualState:@"active-geometry-or-owner-changed"];
                 [self restoreSwipeAnimated:YES];
                 return;
             }
@@ -1096,9 +1220,9 @@ static UIView *YTMUResolveNativeMiniPlayerVisualRoot(UIViewController *controlle
             && ![miniPlayerView isDescendantOfView:visualRoot])) {
         return nil;
     }
-    // YTMMiniPlayerViewController is the verified dedicated mini-player
-    // controller. Its root is used only as a rendered snapshot source; the
-    // native view itself is never translated or detached from the watch layout.
+    // The dedicated controller root identifies this presentation, not its crop.
+    // The snapshot uses the verified minimized container; the native root is
+    // never translated or detached from the watch layout.
     return visualRoot;
 }
 
@@ -1117,9 +1241,10 @@ void YTMUInstallNativeMiniPlayerSwipeIfNeeded(UIViewController *miniPlayerContro
         miniPlayerController, &YTMUNativeMiniPlayerSwipeAssociationKey);
     if ([existing isKindOfClass:YTMUNativeMiniPlayerSwipeHandler.class]
         && [existing isAttachedToMiniPlayerView:miniPlayerView]) {
+        [existing logVisualState:@"handler-reused"];
         if (YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerVisualShellCollapsed
             && YTMUPlaybackCoordinator.sharedCoordinator.owner == YTMUPlaybackOwnerNone) {
-            YTMUSetNativeMiniPlayerViewsLayerOpacity(@[visualRootView], 0.0f);
+            [existing coverConfirmedEmptyShell];
         }
         [existing prepareForPresentation];
         return;
@@ -1133,10 +1258,11 @@ void YTMUInstallNativeMiniPlayerSwipeIfNeeded(UIViewController *miniPlayerContro
                  visualRootView:visualRootView];
     if (YTMUNativePlaybackAdapter.sharedAdapter.nativeMiniPlayerVisualShellCollapsed
         && YTMUPlaybackCoordinator.sharedCoordinator.owner == YTMUPlaybackOwnerNone) {
-        YTMUSetNativeMiniPlayerViewsLayerOpacity(@[visualRootView], 0.0f);
+        [handler coverConfirmedEmptyShell];
     }
     objc_setAssociatedObject(miniPlayerController,
                              &YTMUNativeMiniPlayerSwipeAssociationKey,
                              handler,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [handler logVisualState:existing == nil ? @"handler-created" : @"handler-rebound"];
 }
