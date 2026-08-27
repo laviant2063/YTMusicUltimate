@@ -287,6 +287,9 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
 
     UIView *containerView = YTMUViewFromVerifiedIvar(
         watchView, "_containerView", "@\"YTMGradientBackgroundView\"", gradientClass);
+    // 9.14.2 creates this decoration only for split-view layouts. Its absence
+    // is valid on the native non-split configuration, including a cold launch.
+    // Card geometry still requires the always-present minimized container.
     UIView *gradientBackgroundView = YTMUViewFromVerifiedIvar(
         watchView, "_gradientBackgroundView", "@\"YTMGradientBackgroundView\"", gradientClass);
     UIView *containerShadowView = YTMUViewFromVerifiedIvar(
@@ -296,7 +299,6 @@ static YTMUNativeMiniPlayerVisualContext *YTMUResolveNativeMiniPlayerVisualConte
     UIView *pivotBarView = YTMUObjectReturnedByVerifiedSelector(
         watchView, @"pivotBarView", NSClassFromString(@"YTPivotBarView"));
     if (containerView == nil
-        || gradientBackgroundView == nil
         || containerShadowView == nil
         || pivotBarView == nil
         || pivotBarView.window != window
