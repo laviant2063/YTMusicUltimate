@@ -32,6 +32,22 @@ static CGFloat YTMUNativeVisibleHeightForView(UIView *view,
 NSNotificationName const YTMUNativePlaybackWillStartNotification =
     @"YTMUNativePlaybackWillStartNotification";
 
+// BEGIN native empty-state observation helpers
+typedef NS_ENUM(NSInteger, YTMUNativeMiniPlayerContentState) {
+    YTMUNativeMiniPlayerContentUnknown,
+    YTMUNativeMiniPlayerContentEmpty,
+    YTMUNativeMiniPlayerContentPresent,
+};
+
+static BOOL YTMUNativeEmptyStateMethodHasEncoding(id object, SEL selector,
+                                                   const char *expectedEncoding) {
+    if (object == nil || ![object respondsToSelector:selector]) return NO;
+    Method method = class_getInstanceMethod([object class], selector);
+    const char *encoding = method == NULL ? NULL : method_getTypeEncoding(method);
+    return encoding != NULL && strcmp(encoding, expectedEncoding) == 0;
+}
+// END native empty-state observation helpers
+
 @interface YTMUNativeMiniPlayerSnapshot : NSObject
 @property (nonatomic, assign) BOOL hidden;
 @property (nonatomic, assign) CGFloat alpha;
@@ -52,6 +68,8 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
 @property (nonatomic, assign, readwrite, getter=isNativePlaybackAudible) BOOL nativePlaybackAudible;
 @property (nonatomic, assign, readwrite, getter=isNativeMiniPlayerVisualShellCollapsed) BOOL nativeMiniPlayerVisualShellCollapsed;
 @property (nonatomic, assign) NSUInteger nativeMiniPlayerLayoutGeneration;
+@property (nonatomic, assign) BOOL nativeMiniPlayerRefreshScheduled;
+@property (nonatomic, assign) BOOL nativeMiniPlayerEmptyStateReconciliationInProgress;
 - (void)scheduleNativeMiniPlayerVisualShellReassertionIfNeeded;
 @end
 
@@ -72,8 +90,18 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
     if (self) {
         _miniPlayerControllers = [NSHashTable weakObjectsHashTable];
         _miniPlayerSnapshots = [NSMapTable weakToStrongObjectsMapTable];
+        for (NSNotificationName name in @[UIApplicationDidBecomeActiveNotification,
+                                          YTMUPlaybackOwnershipDidChangeNotification]) {
+            [[NSNotificationCenter defaultCenter]
+                addObserver:self selector:@selector(nativeMiniPlayerEnvironmentDidChange:)
+                       name:name object:nil];
+        }
     }
     return self;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (instancetype)init {
@@ -88,31 +116,147 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
     }
 }
 
+- (void)nativeMiniPlayerEnvironmentDidChange:(__unused NSNotification *)notification {
+    [self scheduleNativeMiniPlayerVisualShellReassertionIfNeeded];
+}
+
+- (YTMUNativeMiniPlayerContentState)nativeMiniPlayerContentState {
+    UIViewController *watch = self.watchViewController;
+    Class watchClass = NSClassFromString(@"YTMWatchViewController");
+    if (watchClass == Nil || ![watch isKindOfClass:watchClass]
+        || !watch.isViewLoaded || watch.view.window == nil) {
+        return YTMUNativeMiniPlayerContentUnknown;
+    }
+
+    // Read-only getters verified in the 9.14.2 Mach-O. Silence alone is not
+    // emptiness: a paused/restoring song, pending model or queued item must stay.
+    SEL modelSelector = NSSelectorFromString(@"model");
+    SEL videoSelector = NSSelectorFromString(@"activeVideoID");
+    SEL queueSelector = NSSelectorFromString(@"queueController");
+    SEL playingSelector = NSSelectorFromString(@"isPlaybackVideoPlaying");
+    if (!YTMUNativeEmptyStateMethodHasEncoding(watch, modelSelector, "@16@0:8")
+        || !YTMUNativeEmptyStateMethodHasEncoding(watch, videoSelector, "@16@0:8")
+        || !YTMUNativeEmptyStateMethodHasEncoding(watch, queueSelector, "@16@0:8")
+        || !YTMUNativeEmptyStateMethodHasEncoding(watch, playingSelector, "B16@0:8")) {
+        return YTMUNativeMiniPlayerContentUnknown;
+    }
+
+    __block YTMUNativeMiniPlayerContentState state = YTMUNativeMiniPlayerContentUnknown;
+    NSException *exception = nil;
+    BOOL readSafely = YTMUPerformObjectiveCBlockSafely(^{
+        id (*sendObject)(id, SEL) = (void *)objc_msgSend;
+        BOOL (*sendBool)(id, SEL) = (void *)objc_msgSend;
+        id model = sendObject(watch, modelSelector);
+        id videoID = sendObject(watch, videoSelector);
+        if (videoID != nil && ![videoID isKindOfClass:NSString.class]) return;
+        if (model != nil || [videoID length] > 0 || sendBool(watch, playingSelector)) {
+            state = YTMUNativeMiniPlayerContentPresent;
+            return;
+        }
+
+        id queue = sendObject(watch, queueSelector);
+        if (queue != nil) {
+            Class queueClass = NSClassFromString(@"YTQueueController");
+            SEL countSelector = NSSelectorFromString(@"queueCount");
+            SEL itemSelector = NSSelectorFromString(@"nowPlayingMusicQueueItem");
+            if (queueClass == Nil || ![queue isKindOfClass:queueClass]
+                || !YTMUNativeEmptyStateMethodHasEncoding(queue, countSelector, "Q16@0:8")
+                || !YTMUNativeEmptyStateMethodHasEncoding(queue, itemSelector, "@16@0:8")) return;
+            unsigned long long (*sendCount)(id, SEL) = (void *)objc_msgSend;
+            if (sendCount(queue, countSelector) > 0 || sendObject(queue, itemSelector) != nil) {
+                state = YTMUNativeMiniPlayerContentPresent;
+                return;
+            }
+        }
+
+        UIViewController *player = self.playerViewController;
+        if (player != nil) {
+            Class playerClass = NSClassFromString(@"YTPlayerViewController");
+            SEL currentVideoSelector = NSSelectorFromString(@"currentVideoID");
+            if (playerClass == Nil || ![player isKindOfClass:playerClass]
+                || !YTMUNativeEmptyStateMethodHasEncoding(player, currentVideoSelector, "@16@0:8")) return;
+            id currentVideoID = sendObject(player, currentVideoSelector);
+            if (currentVideoID != nil && ![currentVideoID isKindOfClass:NSString.class]) return;
+            if ([currentVideoID length] > 0) {
+                state = YTMUNativeMiniPlayerContentPresent;
+                return;
+            }
+        }
+        state = YTMUNativeMiniPlayerContentEmpty;
+    }, &exception);
+    if (!readSafely) {
+        NSLog(@"[YTMusicUltimate] Native empty-state observation failed: %@", exception.name);
+        return YTMUNativeMiniPlayerContentUnknown;
+    }
+    return state;
+}
+
+- (void)reconcileNativeMiniPlayerEmptyState {
+    if (YTMUPlaybackCoordinator.sharedCoordinator.owner != YTMUPlaybackOwnerNone
+        || self.nativePlaybackAudible || self.miniPlayerSuppressed) return;
+
+    YTMUNativeMiniPlayerContentState content = [self nativeMiniPlayerContentState];
+    if (content == YTMUNativeMiniPlayerContentPresent) {
+        if (self.nativeMiniPlayerVisualShellCollapsed) {
+            // Also release our old cover when the host restores a paused queue.
+            // This is a UI invalidation, not a play command or owner transition.
+            [self prepareNativeMiniPlayerForPlaybackStart];
+        }
+        return;
+    }
+    if (content != YTMUNativeMiniPlayerContentEmpty) return;
+    if (self.nativeMiniPlayerVisualShellCollapsed
+        && [self nativeMiniPlayerVisualShellIsGeometricallyCollapsed:NULL]) return;
+
+    self.nativeMiniPlayerEmptyStateReconciliationInProgress = YES;
+    NSError *collapseError = nil;
+    if (![self collapseNativeMiniPlayerVisualShellAfterConfirmedSessionEnd:&collapseError]
+        && collapseError != nil) {
+        NSLog(@"[YTMusicUltimate] Native empty-state layout failed: %@",
+              collapseError.localizedDescription);
+    }
+    self.nativeMiniPlayerEmptyStateReconciliationInProgress = NO;
+}
+
 - (void)scheduleNativeMiniPlayerVisualShellReassertionIfNeeded {
-    if (!self.nativeMiniPlayerVisualShellCollapsed || self.miniPlayerSuppressed) return;
+    if (!NSThread.isMainThread) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf scheduleNativeMiniPlayerVisualShellReassertionIfNeeded];
+        });
+        return;
+    }
+    if (self.nativeMiniPlayerRefreshScheduled
+        || self.nativeMiniPlayerEmptyStateReconciliationInProgress) return;
+    self.nativeMiniPlayerRefreshScheduled = YES;
     NSUInteger generation = self.nativeMiniPlayerLayoutGeneration;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         typeof(self) strongSelf = weakSelf;
-        if (strongSelf == nil
-            || generation != strongSelf.nativeMiniPlayerLayoutGeneration
-            || !strongSelf.nativeMiniPlayerVisualShellCollapsed
-            || strongSelf.miniPlayerSuppressed) {
+        if (strongSelf == nil) return;
+        strongSelf.nativeMiniPlayerRefreshScheduled = NO;
+        if (generation != strongSelf.nativeMiniPlayerLayoutGeneration) {
+            [strongSelf scheduleNativeMiniPlayerVisualShellReassertionIfNeeded];
             return;
         }
-        NSError *collapseError = nil;
-        if (![strongSelf collapseNativeMiniPlayerVisualShellAfterConfirmedSessionEnd:
-                &collapseError]
-            && collapseError != nil) {
-            NSLog(@"[YTMusicUltimate] Native mini-player layout reassertion failed: %@",
-                  collapseError.localizedDescription);
+        NSException *exception = nil;
+        BOOL reconciledSafely = YTMUPerformObjectiveCBlockSafely(^{
+            [strongSelf reconcileNativeMiniPlayerEmptyState];
+        }, &exception);
+        strongSelf.nativeMiniPlayerEmptyStateReconciliationInProgress = NO;
+        if (!reconciledSafely) {
+            NSLog(@"[YTMusicUltimate] Contained native empty-state layout exception: %@",
+                  exception.name);
         }
     });
 }
 
 - (void)registerPlayerViewController:(UIViewController *)controller {
     if (controller == nil) return;
-    [self performOnMainSynchronously:^{ self.playerViewController = controller; }];
+    [self performOnMainSynchronously:^{
+        self.playerViewController = controller;
+        [self scheduleNativeMiniPlayerVisualShellReassertionIfNeeded];
+    }];
 }
 
 - (void)registerWatchViewController:(UIViewController *)controller {
@@ -551,6 +695,9 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
                 return;
             }
             id value = object_getIvar(watchView, ivar);
+            // The same cold-layout variant handled by the r3 swipe resolver:
+            // the main container exists before optional split backgrounds do.
+            if (value == nil && index > 0) continue;
             Class expectedClass = index < 2 ? gradientClass : UIView.class;
             if (![value isKindOfClass:expectedClass]) {
                 resolvedAllViews = NO;
@@ -559,7 +706,7 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
             [shellViews addObject:value];
         }
     }, &ivarException);
-    if (!resolvedSafely || !resolvedAllViews || shellViews.count != 3) {
+    if (!resolvedSafely || !resolvedAllViews || shellViews.count == 0) {
         if (error != NULL) {
             *error = [self nativeMiniPlayerLayoutErrorWithCode:20
                                                     description:ivarException.reason
@@ -790,6 +937,7 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
     [self performOnMainSynchronously:^{
         self.nativeMiniPlayerLayoutGeneration++;
         self.nativePlaybackAudible = NO;
+        [self scheduleNativeMiniPlayerVisualShellReassertionIfNeeded];
     }];
 }
 
@@ -808,6 +956,7 @@ NSNotificationName const YTMUNativePlaybackWillStartNotification =
         } else if (!isPlaying && wasPlaying) {
             [YTMUPlaybackCoordinator.sharedCoordinator nativePlaybackDidPause];
         }
+        [self scheduleNativeMiniPlayerVisualShellReassertionIfNeeded];
     }];
 }
 

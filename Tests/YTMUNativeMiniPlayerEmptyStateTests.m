@@ -254,6 +254,21 @@ static void testColdShellMayLackOptionalBackgrounds(void) {
     CHECK([adapter nativeMiniPlayerVisualShellViewsForWatchView:view error:&error] == nil);
 }
 
+static void testLayoutFailureAndReentryAreContained(void) {
+    YTMUNativePlaybackAdapter *adapter = MakeAdapter();
+    adapter.testLayoutReenters = YES;
+    adapter.testLayoutThrows = YES;
+    [adapter scheduleNativeMiniPlayerVisualShellReassertionIfNeeded];
+    DrainMainQueue();
+    CHECK(adapter.testCollapseCount == 1);
+    CHECK(!adapter.nativeMiniPlayerVisualShellCollapsed);
+    adapter.testLayoutThrows = NO;
+    [adapter scheduleNativeMiniPlayerVisualShellReassertionIfNeeded];
+    DrainMainQueue();
+    CHECK(adapter.testCollapseCount == 2);
+    CHECK(adapter.nativeMiniPlayerVisualShellCollapsed);
+}
+
 int main(void) {
     @autoreleasepool {
         testColdLaunchAndDuplicateCallbacks();
@@ -266,11 +281,12 @@ int main(void) {
         testUnknownDetachedAndThrowingHostsStayUnchanged();
         testIncompatiblePrivateGetterIsNotInvoked();
         testColdShellMayLackOptionalBackgrounds();
+        testLayoutFailureAndReentryAreContained();
         if (failures) {
             fprintf(stderr, "Native empty-state tests failed: %lu assertions\n", (unsigned long)failures);
             return 1;
         }
-        puts("Native empty-state tests passed (10 scenario groups; actual adapter lifecycle/getters)");
+        puts("Native empty-state tests passed (11 scenario groups; actual adapter lifecycle/getters)");
     }
     return 0;
 }

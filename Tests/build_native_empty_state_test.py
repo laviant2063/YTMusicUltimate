@@ -6,6 +6,7 @@ verbatim from production, including the pre-fix scheduler for RED verification.
 """
 
 from pathlib import Path
+import hashlib
 import re
 import sys
 
@@ -31,17 +32,33 @@ optional = {
     "nativeMiniPlayerEnvironmentDidChange",
 }
 starts = list(re.finditer(r"^-\s*\([^\n]+?\)\s*(\w+)", implementation, re.MULTILINE))
+# The r3 playback-ending and suppression paths were audited as unchanged. Keep
+# these pins even when the enclosing adapter's UI-observation code evolves.
+protected_methods = {
+    "applyMiniPlayerSuppressionToControllerWithoutThrowing": "b0e006ecc1502d2baf4469b35b1c1719a5baf361b6a532c001363355b87ad88c",
+    "requestNativePauseForOfflinePlayback": "8fca69695a96dcb7f66edd55769fe86af8bc5d9bff49eeb59550a379f03814fa",
+    "requestNativeSessionEndFromMiniPlayerController": "88294a34d9e8f9ecb9b0a614fa6f58adb9f30f50cc2fe68e653e7e9170f093d3",
+    "collapseNativeMiniPlayerVisualShellAfterConfirmedSessionEnd": "a3eea11335b0cdfd1973ff32f6e787ea951477f1a7776edb972402a3669f850a",
+}
 methods = []
 found = set()
+protected_found = set()
 for index, match in enumerate(starts):
     name = match.group(1)
+    end = starts[index + 1].start() if index + 1 < len(starts) else len(implementation)
+    body = implementation[match.start():end].strip()
+    if name in protected_methods:
+        if hashlib.sha256(body.encode()).hexdigest() != protected_methods[name]:
+            raise SystemExit(f"Protected r3 playback method changed: {name}")
+        protected_found.add(name)
     if name not in required | optional:
         continue
-    end = starts[index + 1].start() if index + 1 < len(starts) else len(implementation)
-    methods.append(implementation[match.start():end].strip())
+    methods.append(body)
     found.add(name)
 if required - found:
     raise SystemExit(f"Required production methods missing: {sorted(required - found)}")
+if protected_methods.keys() - protected_found:
+    raise SystemExit("A protected r3 playback method is missing")
 
 helpers = ""
 start_marker = "// BEGIN native empty-state observation helpers"
@@ -57,6 +74,8 @@ adapter = f"""
 @property (nonatomic) NSUInteger testCollapseCount;
 @property (nonatomic) BOOL testGeometryCollapsed;
 @property (nonatomic) BOOL testLayoutSucceeds;
+@property (nonatomic) BOOL testLayoutThrows;
+@property (nonatomic) BOOL testLayoutReenters;
 {declarations}
 - (void)applyMiniPlayerSuppressionToController:(UIViewController *)controller;
 - (BOOL)collapseNativeMiniPlayerVisualShellAfterConfirmedSessionEnd:(NSError **)error;
@@ -73,6 +92,11 @@ adapter = f"""
     if (YTMUPlaybackCoordinator.sharedCoordinator.owner != YTMUPlaybackOwnerNone
         || self.nativePlaybackAudible || self.miniPlayerSuppressed) return NO;
     self.testCollapseCount++;
+    if (self.testLayoutReenters) [self scheduleNativeMiniPlayerVisualShellReassertionIfNeeded];
+    if (self.testLayoutThrows) {{
+        @throw [NSException exceptionWithName:NSInternalInconsistencyException
+                                      reason:@"synthetic native layout failure" userInfo:nil];
+    }}
     if (!self.testLayoutSucceeds) return NO;
     self.testGeometryCollapsed = YES;
     self.nativeMiniPlayerVisualShellCollapsed = YES;

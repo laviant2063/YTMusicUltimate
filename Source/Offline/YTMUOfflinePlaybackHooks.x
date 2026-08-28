@@ -118,16 +118,19 @@ static void YTMUPrepareForNativePlayback(UIViewController *controller) {
 
 - (void)loadWithModel:(id)model fromView:(id)view expand:(BOOL)expand startPlayback:(BOOL)startPlayback {
     if (startPlayback) YTMUNativePlaybackWillStart();
+    else if (model != nil) [YTMUNativePlaybackAdapter.sharedAdapter prepareNativeMiniPlayerForPlaybackStart];
     %orig(model, view, expand, startPlayback);
 }
 
 - (void)loadWithModel:(id)model fromView:(id)view pageLayout:(long long)layout startPlayback:(BOOL)startPlayback {
     if (startPlayback) YTMUNativePlaybackWillStart();
+    else if (model != nil) [YTMUNativePlaybackAdapter.sharedAdapter prepareNativeMiniPlayerForPlaybackStart];
     %orig(model, view, layout, startPlayback);
 }
 
 - (void)loadWithModel:(id)model startPlayback:(BOOL)startPlayback {
     if (startPlayback) YTMUNativePlaybackWillStart();
+    else if (model != nil) [YTMUNativePlaybackAdapter.sharedAdapter prepareNativeMiniPlayerForPlaybackStart];
     %orig(model, startPlayback);
 }
 
@@ -167,6 +170,12 @@ static void YTMUPrepareForNativePlayback(UIViewController *controller) {
     %orig(animated);
     [YTMUNativePlaybackAdapter.sharedAdapter registerMiniPlayerViewController:self];
     YTMUInstallNativeMiniPlayerSwipeIfNeeded(self);
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig(animated);
+    // Initial viewWillAppear may run before the watch view has a window.
+    [YTMUNativePlaybackAdapter.sharedAdapter registerMiniPlayerViewController:self];
 }
 
 %end
