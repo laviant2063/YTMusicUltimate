@@ -133,10 +133,12 @@ static BOOL YTMUNativeEmptyStateMethodHasEncoding(id object, SEL selector,
     SEL modelSelector = NSSelectorFromString(@"model");
     SEL videoSelector = NSSelectorFromString(@"activeVideoID");
     SEL queueSelector = NSSelectorFromString(@"queueController");
+    SEL playerSelector = NSSelectorFromString(@"playerViewController");
     SEL playingSelector = NSSelectorFromString(@"isPlaybackVideoPlaying");
     if (!YTMUNativeEmptyStateMethodHasEncoding(watch, modelSelector, "@16@0:8")
         || !YTMUNativeEmptyStateMethodHasEncoding(watch, videoSelector, "@16@0:8")
         || !YTMUNativeEmptyStateMethodHasEncoding(watch, queueSelector, "@16@0:8")
+        || !YTMUNativeEmptyStateMethodHasEncoding(watch, playerSelector, "@16@0:8")
         || !YTMUNativeEmptyStateMethodHasEncoding(watch, playingSelector, "B16@0:8")) {
         return YTMUNativeMiniPlayerContentUnknown;
     }
@@ -169,7 +171,9 @@ static BOOL YTMUNativeEmptyStateMethodHasEncoding(id object, SEL selector,
             }
         }
 
-        UIViewController *player = self.playerViewController;
+        // Generic player registration can also observe an inline home preview.
+        // Only the watch controller's own player describes this mini-player.
+        UIViewController *player = sendObject(watch, playerSelector);
         if (player != nil) {
             Class playerClass = NSClassFromString(@"YTPlayerViewController");
             SEL currentVideoSelector = NSSelectorFromString(@"currentVideoID");

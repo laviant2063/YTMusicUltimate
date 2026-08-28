@@ -269,6 +269,17 @@ static void testLayoutFailureAndReentryAreContained(void) {
     CHECK(adapter.nativeMiniPlayerVisualShellCollapsed);
 }
 
+static void testUnrelatedInlinePlayerDoesNotDefineNativeQueueState(void) {
+    YTMUNativePlaybackAdapter *adapter = MakeAdapter();
+    YTPlayerViewController *inlinePlayer = [YTPlayerViewController new];
+    inlinePlayer.currentVideoID = @"home-preview";
+    adapter.playerViewController = inlinePlayer;
+    [adapter scheduleNativeMiniPlayerVisualShellReassertionIfNeeded];
+    DrainMainQueue();
+    CHECK(adapter.testCollapseCount == 1);
+    CHECK([inlinePlayer.currentVideoID isEqualToString:@"home-preview"]);
+}
+
 int main(void) {
     @autoreleasepool {
         testColdLaunchAndDuplicateCallbacks();
@@ -282,11 +293,12 @@ int main(void) {
         testIncompatiblePrivateGetterIsNotInvoked();
         testColdShellMayLackOptionalBackgrounds();
         testLayoutFailureAndReentryAreContained();
+        testUnrelatedInlinePlayerDoesNotDefineNativeQueueState();
         if (failures) {
             fprintf(stderr, "Native empty-state tests failed: %lu assertions\n", (unsigned long)failures);
             return 1;
         }
-        puts("Native empty-state tests passed (11 scenario groups; actual adapter lifecycle/getters)");
+        puts("Native empty-state tests passed (12 scenario groups; actual adapter lifecycle/getters)");
     }
     return 0;
 }
