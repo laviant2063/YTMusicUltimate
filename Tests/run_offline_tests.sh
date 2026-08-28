@@ -106,6 +106,22 @@ xcrun clang \
 
 "$build_root/native-visual-context-tests"
 
+python3 "$repo_root/Tests/build_native_empty_state_test.py" \
+  "$repo_root/Source/Offline/YTMUNativePlaybackAdapter.m" \
+  "$repo_root/Tests/YTMUNativeMiniPlayerEmptyStateTests.m" \
+  "$build_root/native-empty-state-tests.m"
+
+xcrun clang \
+  -fobjc-arc \
+  -Wall -Wextra -Werror \
+  -framework Foundation \
+  "$build_root/native-empty-state-tests.m" \
+  "$repo_root/Source/Offline/YTMUObjectiveCExceptionGuard.m" \
+  -I"$repo_root/Source/Offline" \
+  -o "$build_root/native-empty-state-tests"
+
+"$build_root/native-empty-state-tests"
+
 bash "$repo_root/Tests/YTMUPlaybackIntegrationStaticTests.sh"
 bash "$repo_root/Tests/YTMUOfflinePlayerUIStaticTests.sh"
 bash "$repo_root/Tests/YTMUNativeMiniPlayerUnifiedDismissStaticTests.sh"
